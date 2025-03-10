@@ -1,0 +1,26 @@
+
+
+
+//this is a comment
+
+//how to define a function
+int foo() {
+
+	//secret type modifier
+	secret int x = 7;
+
+	//a function without secret type specified is assumed to have public type
+	int y = 7;
+
+	//equivalent to:
+	public int z = 7;
+
+	return 0;
+}
+
+
+//the following code throws a syntax error on double decimal
+40.0.0
+
+//the following code throws a syntax error on unknown symbol
+#
