@@ -164,6 +164,10 @@ static int get_tok() {
 }
 
 
+
+
+
+
 int main(int argc, char** argv) {
 	if (argc != 2) {
 		fprintf(stderr, "Usage: No .ank file provided to lexer.\n");
@@ -171,6 +175,18 @@ int main(int argc, char** argv) {
 	}
 
 	const char* filename = argv[1];  // Get filename from arguments
+
+	if (
+		strlen(filename) < 5 ||
+		filename[strlen(filename) - 4] != '.' ||
+		filename[strlen(filename) - 3] != 'a' ||
+		filename[strlen(filename) - 2] != 'n' ||
+		filename[strlen(filename) - 1] != 'k'
+	) {
+		fprintf(stderr, "Usage: Incorrect file type. Lexer parses .ank files.\n");
+		return 1;
+	}
+
 	g_file = fopen(filename, "r");	 // Open file in read mode
 
 	if (!g_file) {
