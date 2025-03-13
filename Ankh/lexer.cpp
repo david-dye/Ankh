@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <vector>
 #include <map>
+
+#pragma warning(push, 0) //these headers have a million warnings (sloppily written?)
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
@@ -17,8 +19,12 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#pragma warning(pop) //stop hiding warnings for *our* code
+
 
 using namespace llvm;
+
+
 
 // The lexer returns tokens [0-255] if it is an unknown character, otherwise one
 // of these for known things.
@@ -34,6 +40,9 @@ enum Token {
 	tok_num = -5,
 };
 
+
+FILE* g_file;							// .ank file that we will lex, parse, and compile to LLVM IR.
+
 static std::string g_line;				// Full line of standard input
 static unsigned long g_line_idx;		// Index into g_line
 static unsigned long g_line_count = 0;	// Line counter
@@ -42,8 +51,22 @@ bool g_seen_errors = false;				// Whether any errors were encountered while pars
 static std::string g_identifier_str;	// Filled in for tok_identifier
 static std::string g_number_str;		// Filled in for tok_num
 
-FILE* g_file;							// Global file
 
+//global variables for creating LLVM bytecode
+static std::unique_ptr<LLVMContext> g_llvm_context;
+static std::unique_ptr<IRBuilder<>> g_builder;
+static std::unique_ptr<Module> g_module;
+static std::map<std::string, Value*> g_named_values;
+
+
+// log_compiler_error(str)
+//	Logs a compilation error and returns a nullptr of type Value.
+//	Also sets the g_seen_errors flag to true.
+Value* log_compiler_error(const char* str) {
+	g_seen_errors = true;
+	fprintf(stderr, "[%lu, %lu]: CompilerError: %s\n", g_line_count, g_line_idx, str);
+	return nullptr;
+}
 
 //======================================================================================================
 // Abstract Syntax Tree (AST)
@@ -61,6 +84,7 @@ namespace AST {
 		}
 
 		virtual ~ExprAST() = default;
+		virtual Value* codegen() = 0;
 	};
 
 	// DoubleAST - Expression class for floating point numbers, at double precision.
@@ -69,7 +93,12 @@ namespace AST {
 
 	public:
 		DoubleAST(const std::string& type, double val) : ExprAST(type), val(val) {}
+		Value* codegen() override;
 	};
+
+	Value* DoubleAST::codegen() {
+		return ConstantFP::get(*g_llvm_context, APFloat(val));
+	}
 
 	// IntegerAST - Expression class for integers, taking four bytes of memory.
 	class IntegerAST : public ExprAST {
@@ -77,6 +106,7 @@ namespace AST {
 
 	public:
 		IntegerAST(const std::string& type, int32_t val) : ExprAST(type), val(val) {}
+		Value* codegen() override;
 	};
 
 	// InfIntegerAST - Expression class for integers, with infinite precision.
@@ -86,6 +116,7 @@ namespace AST {
 
 	public:
 		InfIntegerAST(const std::string& type, const std::string& val) : ExprAST(type), val(val) {}
+		Value* codegen() override;
 	};
 
 	/// VariableExprAST - Expression class for referencing a variable, like "a".
@@ -94,7 +125,16 @@ namespace AST {
 
 	public:
 		VariableExprAST(const std::string& type, const std::string& name) : ExprAST(type), name(name) {}
+		Value* codegen() override;
 	};
+
+	Value* VariableExprAST::codegen() {
+		//assumes the variable has already been emitted somewhere and its value is available.
+		Value* V = g_named_values[name];
+		if (!V)
+			log_compiler_error("Unknown variable name");
+		return V;
+	}
 
 	/// BinaryExprAST - Expression class for a binary operator.
 	class BinaryExprAST : public ExprAST {
@@ -105,7 +145,39 @@ namespace AST {
 		BinaryExprAST(const std::string& type, char op, std::unique_ptr<ExprAST> lhs, std::unique_ptr<ExprAST> rhs)
 			: ExprAST(type), op(op), lhs(std::move(lhs)), rhs(std::move(rhs)) {
 		}
-	};
+		Value* codegen() override;
+	}; 
+	
+	Value* BinaryExprAST::codegen() {
+		//L and R **MUST** have the same type OR we must do type conversions
+		Value* L = lhs->codegen();
+		Value* R = rhs->codegen();
+		if (!L || !R)
+			return nullptr;
+
+		switch (op) {
+		case '+':
+			return g_builder->CreateFAdd(L, R, "addtmp"); //can omit the "addtmp" arg in all cases...
+		case '-':
+			return g_builder->CreateFSub(L, R, "subtmp");
+		case '*':
+			return g_builder->CreateFMul(L, R, "multmp");
+		case '/':
+			return g_builder->CreateFDiv(L, R, "multmp");
+		case '<':
+			L = g_builder->CreateFCmpULT(L, R, "cmptmp");
+			// Convert bool 0/1 to double 0.0 or 1.0. This SHOULD be unnecessary in the future
+			return g_builder->CreateUIToFP(L, Type::getDoubleTy(*g_llvm_context),
+				"booltmp");
+		case '>':
+			L = g_builder->CreateFCmpULT(R, L, "cmptmp");
+			// Convert bool 0/1 to double 0.0 or 1.0. This SHOULD be unnecessary in the future
+			return g_builder->CreateUIToFP(L, Type::getDoubleTy(*g_llvm_context),
+				"booltmp");
+		default:
+			return log_compiler_error("invalid binary operator");
+		}
+	}
 
 	/// CallExprAST - Expression class for function calls.
 	class CallExprAST : public ExprAST {
@@ -116,22 +188,64 @@ namespace AST {
 		CallExprAST(const std::string& type, const std::string& callee, std::vector<std::unique_ptr<ExprAST>> args)
 			: ExprAST(type), callee(callee), args(std::move(args)) {
 		}
+		Value* codegen() override;
 	};
+
+	Value* CallExprAST::codegen() {
+		// Look up the name in the global module table.
+		Function* callee_f = g_module->getFunction(callee);
+		if (!callee_f)
+			return log_compiler_error("Unknown function referenced");
+
+		// If argument mismatch error.
+		if (callee_f->arg_size() != args.size())
+			return log_compiler_error("Incorrect # arguments passed");
+
+		std::vector<Value*> args_v;
+		for (unsigned i = 0, e = args.size(); i != e; ++i) {
+			args_v.push_back(args[i]->codegen());
+			if (!args_v.back())
+				return nullptr;
+		}
+
+		return g_builder->CreateCall(callee_f, args_v, "calltmp");
+	}
 
 	// PrototypeAST - This class represents the "prototype" for a function,
 	// which captures its name, type, and argument names (thus implicitly the number
 	// of arguments the function takes).
 	class PrototypeAST : public ExprAST {
 		std::string name;
-		std::vector<std::string> args;
+		std::vector<std::string> args; //this will likely need to contain more than just the name of arguments
 
 	public:
 		PrototypeAST(const std::string& type, const std::string& name, std::vector<std::string> args)
 			: ExprAST(type), name(name), args(std::move(args)) {
 		}
 
-		const std::string& getName() const { return name; }
+		Function* codegen() override;
+
+		const std::string& get_name() const { return name; }
+		const size_t get_nargs() const { return args.size(); }
+		const std::string& get_arg_by_idx(size_t i) const { assert(i < get_nargs()); return args[i]; }
 	};
+
+	Function* PrototypeAST::codegen() {
+		// Make the function type:  double(double,double) etc.
+		// TODO: Make sure types (function AND argument) are **correct** and not just all doubles
+		std::vector<Type*> Doubles(args.size(), Type::getDoubleTy(*g_llvm_context));
+
+		FunctionType* FT = FunctionType::get(Type::getDoubleTy(*g_llvm_context), Doubles, false);
+
+		Function* F = Function::Create(FT, Function::ExternalLinkage, name, g_module.get());
+
+		// Set names for all arguments.
+		unsigned idx = 0;
+		for (auto& arg : F->args())
+			arg.setName(args[idx++]);
+
+		return F;
+	}
 
 	// FunctionAST - This class represents a function definition itself.
 	class FunctionAST {
@@ -142,23 +256,76 @@ namespace AST {
 		FunctionAST(std::unique_ptr<PrototypeAST> proto, std::unique_ptr<ExprAST> body)
 			: proto(std::move(proto)), body(std::move(body)) {
 		}
+
+		Function* codegen();
 	};
 
+	Function* FunctionAST::codegen() {
+		// First, check for an existing function from a previous 'extern' declaration.
+		Function* f = g_module->getFunction(proto->get_name());
+
+		if (!f)
+			f = proto->codegen();
+
+		if (!f)
+			return nullptr;
+
+		if (!f->empty())
+			return (Function*)log_compiler_error("Function cannot be redefined.");
+
+
+		//verify that the signature of f is the same as the prototype
+		if (f->arg_size() != proto->get_nargs()) {
+			return (Function*)log_compiler_error("Function cannot be redefined.");
+		}
+		size_t proto_iter = 0;
+		for (auto f_iter = f->args().begin(); f_iter != f->args().end(); ++f_iter) {
+			//f and proto have the same number of args; check if they also have the same names
+			if (f_iter->getName().str() != proto->get_arg_by_idx(proto_iter)) {
+				return (Function*)log_compiler_error("Function cannot be redefined.");
+			}
+		}
+		
+		// Create a new basic block to start insertion into.
+		BasicBlock* bb = BasicBlock::Create(*g_llvm_context, "entry", f);
+		g_builder->SetInsertPoint(bb);
+
+		// Record the function arguments in the NamedValues map.
+		g_named_values.clear();
+		for (auto& arg : f->args())
+			g_named_values[std::string(arg.getName())] = &arg;
+		
+		if (Value* retval = body->codegen()) {
+			// Finish off the function.
+			g_builder->CreateRet(retval);
+
+			// Validate the generated code, checking for consistency.
+			verifyFunction(*f);
+
+			return f;
+		}
+
+		// Error reading body, remove function.
+		f->eraseFromParent();
+		return nullptr;
+	}
 }
 
+using namespace AST;
 
-// log_error()
+// log_syntax_error()
 //	Helper function for error handling. Returns nullptr.
-std::unique_ptr<AST::ExprAST> log_error(const char* str) {
+//	Also sets the g_seen_errors flag to true.
+std::unique_ptr<ExprAST> log_syntax_error(const char* str) {
 	g_seen_errors = true;
 	fprintf(stderr, "[%lu, %lu]: SyntaxError: %s\n", g_line_count, g_line_idx, str);
 	return nullptr;
 }
 
-// log_error_p()
+// log_syntax_error_p()
 //	Helper function for error handling. Returns nullptr.
-std::unique_ptr<AST::PrototypeAST> log_error_p(const char* str) {
-	log_error(str);
+std::unique_ptr<PrototypeAST> log_syntax_error_p(const char* str) {
+	log_syntax_error(str);
 	return nullptr;
 }
 
@@ -217,9 +384,9 @@ static int get_tok() {
 		}
 
 		//check if identifier string is a keyword
-		if (g_identifier_str == "keyword1")
+		if (g_identifier_str == "def")
 			return tok_def;
-		if (g_identifier_str == "keyword2")
+		if (g_identifier_str == "extern")
 			return tok_extern;
 
 		//not a keyword, indicate that g_identifier_str is filled
@@ -240,7 +407,7 @@ static int get_tok() {
 		while (isdigit(g_line[g_line_idx]) || g_line[g_line_idx] == '.') {
 
 			if (g_line[g_line_idx] == '.' && seen_period) {
-				log_error("Invalid number of decimals in number.");
+				log_syntax_error("Invalid number of decimals in number.");
 				read_line();
 				return get_tok();
 			}
@@ -282,8 +449,8 @@ static int get_tok() {
 //======================================================================================================
 
 static int g_cur_tok; //current token
-static std::unique_ptr<AST::ExprAST> parse_expression();
-static std::unique_ptr<AST::ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<AST::ExprAST> lhs);
+static std::unique_ptr<ExprAST> parse_expression();
+static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<ExprAST> lhs);
 
 
 // get_next_tok()
@@ -295,16 +462,16 @@ static int get_next_tok() {
 
 // parse_double_expr()
 //	Parse a double precision float number expression
-static std::unique_ptr<AST::ExprAST> parse_double_expr() {
+static std::unique_ptr<ExprAST> parse_double_expr() {
 	double d = strtod(g_number_str.c_str(), 0);
-	auto result = std::make_unique<AST::DoubleAST>("double", d);
+	auto result = std::make_unique<DoubleAST>("double", d);
 	get_next_tok(); // consume the number
 	return std::move(result);
 }
 
 // parse_paren_expr()
 //	Parse a parenthetical expression
-static std::unique_ptr<AST::ExprAST> parse_paren_expr() {
+static std::unique_ptr<ExprAST> parse_paren_expr() {
 	// parenexpr := '(' expression ')'
 	get_next_tok(); // eat (.
 
@@ -316,7 +483,7 @@ static std::unique_ptr<AST::ExprAST> parse_paren_expr() {
 
 	//should be impossible to reach
 	if (g_cur_tok != ')')
-		return log_error("expected ')'");
+		return log_syntax_error("expected ')'");
 
 	get_next_tok(); // eat ).
 
@@ -325,7 +492,7 @@ static std::unique_ptr<AST::ExprAST> parse_paren_expr() {
 
 // parse_identifier_expr()
 //	Parse an identifier expression
-static std::unique_ptr<AST::ExprAST> parse_identifier_expr() {
+static std::unique_ptr<ExprAST> parse_identifier_expr() {
 	// identifierexpr
 	//   := identifier
 	//   := identifier '(' expression* ')'
@@ -335,14 +502,14 @@ static std::unique_ptr<AST::ExprAST> parse_identifier_expr() {
 	get_next_tok();  //eat identifier.
 
 	if (g_cur_tok != '(') {
-		return std::make_unique<AST::VariableExprAST>("TODO", id_name);
+		return std::make_unique<VariableExprAST>("TODO", id_name);
 	}
 
 	get_next_tok();  // eat (
-	std::vector<std::unique_ptr<AST::ExprAST>> args;
+	std::vector<std::unique_ptr<ExprAST>> args;
 	if (g_cur_tok != ')') {
 		while (true) {
-			std::unique_ptr<AST::ExprAST> arg = parse_expression();
+			std::unique_ptr<ExprAST> arg = parse_expression();
 			if (arg) {
 				args.push_back(std::move(arg));
 			}
@@ -354,7 +521,7 @@ static std::unique_ptr<AST::ExprAST> parse_identifier_expr() {
 				break;
 
 			if (g_cur_tok != ',')
-				return log_error("Expected ')' or ',' in argument list");
+				return log_syntax_error("Expected ')' or ',' in argument list");
 			
 			get_next_tok();
 		}
@@ -363,12 +530,12 @@ static std::unique_ptr<AST::ExprAST> parse_identifier_expr() {
 	// Eat the ')'.
 	get_next_tok();
 
-	return std::make_unique<AST::CallExprAST>("none", id_name, std::move(args));
+	return std::make_unique<CallExprAST>("none", id_name, std::move(args));
 }
 
 // parse_primary()
 //	Determines the type of expression to parse and calls the appropriate handler
-static std::unique_ptr<AST::ExprAST> parse_primary() {
+static std::unique_ptr<ExprAST> parse_primary() {
 	// primary
 	//   ::= identifierexpr
 	//   ::= numberexpr
@@ -383,7 +550,7 @@ static std::unique_ptr<AST::ExprAST> parse_primary() {
 	case '(':
 		return parse_paren_expr();
 	default:
-		return log_error("unknown token when expecting an expression");
+		return log_syntax_error("unknown token when expecting an expression");
 	}
 }
 
@@ -402,6 +569,11 @@ static void set_binop_precedence() {
 	binop_precedence['/'] = 40;
 }
 
+#ifndef isascii
+static unsigned int isascii(unsigned int ch) {
+	return (ch < 128);
+}
+#endif
 
 // get_tok_precedence() 
 //	Get the precedence of the pending binary operator token.
@@ -424,7 +596,7 @@ static int get_tok_precedence() {
 
 // parse_expression()
 //	Parses an expression into a left-hand-side and a right-hand-side
-static std::unique_ptr<AST::ExprAST> parse_expression() {
+static std::unique_ptr<ExprAST> parse_expression() {
 	// expression
 	//   := primary binop_rhs
 	auto lhs = parse_primary();
@@ -437,7 +609,7 @@ static std::unique_ptr<AST::ExprAST> parse_expression() {
 // parse_binop_rhs(expr_prec, lhs)
 //	Parses the right-hand-side of a binary expression using precedence.
 //	This is functionally an extremely important part of the parser.
-static std::unique_ptr<AST::ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<AST::ExprAST> lhs) {
+static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<ExprAST> lhs) {
 	// binop_rhs
 	//   := ('+' primary)*
 	while (true) {
@@ -466,40 +638,40 @@ static std::unique_ptr<AST::ExprAST> parse_binop_rhs(int expr_prec, std::unique_
 		}
 
 		//merge lhs and rhs.
-		lhs = std::make_unique<AST::BinaryExprAST>(lhs->get_type(), binop, std::move(lhs), std::move(rhs));
+		lhs = std::make_unique<BinaryExprAST>(lhs->get_type(), binop, std::move(lhs), std::move(rhs));
 	}
 }
 
 // parse_prototype
 //	Parse a function prototype, i.e. its name and arguments
-static std::unique_ptr<AST::PrototypeAST> parse_prototype() {
+static std::unique_ptr<PrototypeAST> parse_prototype() {
 	// prototype
 	//   := id '(' id* ')'
 	if (g_cur_tok != tok_identifier)
-		return log_error_p("Expected function name in prototype");
+		return log_syntax_error_p("Expected function name in prototype");
 
 	std::string fn_name = g_identifier_str;
 	get_next_tok();
 
 	if (g_cur_tok != '(')
-		return log_error_p("Expected '(' in prototype");
+		return log_syntax_error_p("Expected '(' in prototype");
 
 	//read the list of argument names.
 	std::vector<std::string> arg_names;
 	while (get_next_tok() == tok_identifier)
 		arg_names.push_back(g_identifier_str);
 	if (g_cur_tok != ')')
-		return log_error_p("Expected ')' in prototype");
+		return log_syntax_error_p("Expected ')' in prototype");
 
 	//success.
 	get_next_tok();  // eat ')'.
 
-	return std::make_unique<AST::PrototypeAST>("TODO", fn_name, std::move(arg_names));
+	return std::make_unique<PrototypeAST>("TODO", fn_name, std::move(arg_names));
 }
 
 // parse_function()
 //	Parses a function by getting its protoype and its body expression
-static std::unique_ptr<AST::FunctionAST> parse_function() {
+static std::unique_ptr<FunctionAST> parse_function() {
 	// definition := 'def' prototype expression
 	get_next_tok();  // eat def.
 	auto proto = parse_prototype();
@@ -509,18 +681,19 @@ static std::unique_ptr<AST::FunctionAST> parse_function() {
 
 	auto expr = parse_expression();
 	if (expr) {
-		return std::make_unique<AST::FunctionAST>(std::move(proto), std::move(expr));
+		return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
 	}
 	return nullptr;
 }
 
 // parse_extern()
 //	Parses an external import.
-static std::unique_ptr<AST::PrototypeAST> parse_extern() {
+static std::unique_ptr<PrototypeAST> parse_extern() {
 	// external ::= 'extern' prototype
 	get_next_tok();  // eat extern.
 	return parse_prototype();
 }
+
 
 
 //======================================================================================================
@@ -533,6 +706,12 @@ static void handle_function() {
 		//skip token for error recovery
 		fprintf(stderr, "[%lu, %lu]: SyntaxError: Attempted and failed to parse function.\n", g_line_count, g_line_idx);
 		get_next_tok();
+		return;
+	}
+	if (auto* fn_ir = fn_ptr->codegen()) {
+		fprintf(stderr, "Read function definition:");
+		fn_ir->print(errs()); //print function to standard error
+		fprintf(stderr, "\n");
 	}
 }
 
@@ -542,6 +721,12 @@ static void handle_extern() {
 		//skip token for error recovery
 		fprintf(stderr, "[%lu, %lu]: SyntaxError: Attempted and failed to parse an external function.\n", g_line_count, g_line_idx);
 		get_next_tok();
+		return;
+	}
+	if (auto* extern_ir = extern_ptr->codegen()) {
+		fprintf(stderr, "Read external definition:");
+		extern_ir->print(errs()); //print extern to standard error
+		fprintf(stderr, "\n");
 	}
 }
 
@@ -567,6 +752,7 @@ static void main_loop() {
 		}
 	}
 }
+
 
 
 int main(int argc, char** argv) {

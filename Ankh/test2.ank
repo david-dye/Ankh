@@ -1,0 +1,5 @@
+
+//this is intended to verify correctness of lexer.cpp for the Kaleidoscope documentation.
+
+extern cos(x);
+def foo(x) cos(x);

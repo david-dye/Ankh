@@ -20,6 +20,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="test.ank" />
+    <None Include="test1.ank" />
+    <None Include="test2.ank" />
   </ItemGroup>
 </Project>
