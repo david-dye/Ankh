@@ -22,5 +22,6 @@
   <ItemGroup>
     <None Include="test1.ank" />
     <None Include="test2.ank" />
+    <None Include="test3.ank" />
   </ItemGroup>
 </Project>

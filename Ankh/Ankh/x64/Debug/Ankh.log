@@ -1,3 +1,0 @@
-﻿  The vcpkg manifest was disabled, but we found a manifest file in C:\Users\dwdjr\source\repos\Ankh\Ankh\. You may want to enable vcpkg manifests in your properties page or pass /p:VcpkgEnableManifest=true to the msbuild invocation.
-  lexer.cpp
-C:\Users\dwdjr\source\repos\Ankh\Ankh\lexer.cpp(9,10): error C1083: Cannot open include file: 'llvm/ADT/APFloat.h': No such file or directory

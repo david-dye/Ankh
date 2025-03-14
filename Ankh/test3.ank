@@ -1,0 +1,2 @@
+extern foo(a);
+def foo(b) b;

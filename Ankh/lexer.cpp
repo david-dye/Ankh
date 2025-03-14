@@ -58,6 +58,15 @@ static std::unique_ptr<IRBuilder<>> g_builder;
 static std::unique_ptr<Module> g_module;
 static std::map<std::string, Value*> g_named_values;
 
+// initialize_llvm()
+//	Initializes the LLVM context, module, and builder to allow
+//	for IR generation.
+static void initialize_llvm_module() {
+	g_llvm_context = std::make_unique<LLVMContext>();
+	g_module = std::make_unique<Module>("Ankh IR Module", *g_llvm_context);
+	g_builder = std::make_unique<IRBuilder<>>(*g_llvm_context);
+	return;
+}
 
 // log_compiler_error(str)
 //	Logs a compilation error and returns a nullptr of type Value.
@@ -136,7 +145,7 @@ namespace AST {
 		return V;
 	}
 
-	/// BinaryExprAST - Expression class for a binary operator.
+	// BinaryExprAST - Expression class for a binary operator.
 	class BinaryExprAST : public ExprAST {
 		char op;
 		std::unique_ptr<ExprAST> lhs, rhs;
@@ -179,7 +188,7 @@ namespace AST {
 		}
 	}
 
-	/// CallExprAST - Expression class for function calls.
+	// CallExprAST - Expression class for function calls.
 	class CallExprAST : public ExprAST {
 		std::string callee;
 		std::vector<std::unique_ptr<ExprAST>> args;
@@ -202,7 +211,7 @@ namespace AST {
 			return log_compiler_error("Incorrect # arguments passed");
 
 		std::vector<Value*> args_v;
-		for (unsigned i = 0, e = args.size(); i != e; ++i) {
+		for (size_t i = 0, e = args.size(); i != e; ++i) {
 			args_v.push_back(args[i]->codegen());
 			if (!args_v.back())
 				return nullptr;
@@ -694,11 +703,20 @@ static std::unique_ptr<PrototypeAST> parse_extern() {
 	return parse_prototype();
 }
 
-
+static std::unique_ptr<FunctionAST> parse_top_level_expression() {
+	/// toplevelexpr := expression
+	if (auto expr = parse_expression()) {
+		// Make an anonymous proto.
+		auto proto = std::make_unique<PrototypeAST>("TODO", "", std::vector<std::string>());
+		return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
+	}
+	return nullptr;
+}
 
 //======================================================================================================
 // Top level parsing
 //======================================================================================================
+
 
 static void handle_function() {
 	auto fn_ptr = parse_function();
@@ -708,11 +726,7 @@ static void handle_function() {
 		get_next_tok();
 		return;
 	}
-	if (auto* fn_ir = fn_ptr->codegen()) {
-		fprintf(stderr, "Read function definition:");
-		fn_ir->print(errs()); //print function to standard error
-		fprintf(stderr, "\n");
-	}
+	fn_ptr->codegen();
 }
 
 static void handle_extern() {
@@ -723,15 +737,28 @@ static void handle_extern() {
 		get_next_tok();
 		return;
 	}
-	if (auto* extern_ir = extern_ptr->codegen()) {
-		fprintf(stderr, "Read external definition:");
-		extern_ir->print(errs()); //print extern to standard error
-		fprintf(stderr, "\n");
-	}
+	extern_ptr->codegen();
 }
 
-/// top ::= definition | external | expression | ';'
-static void main_loop() {
+static void handle_top_level_expression() {
+	// Evaluate a top-level expression into an anonymous function.
+	auto tle_ptr = parse_top_level_expression();
+	if (!tle_ptr) {
+		//skip token for error recovery
+		fprintf(stderr, "[%lu, %lu]: SyntaxError: Attempted and failed to parse a top level expression.\n", g_line_count, g_line_idx);
+		get_next_tok();
+		return;
+	}
+	tle_ptr->codegen();
+}
+
+
+// parse_file()
+//	Parses an entire input file by moving through the file
+//	line-by-line and parsing individual definitions, imports,
+//	and top-level expressions.
+static void parse_file() {
+	// top := definition | external | expression | ';'
 	while (true) {
 		switch (g_cur_tok) {
 		case tok_eof:
@@ -746,8 +773,7 @@ static void main_loop() {
 			handle_extern();
 			break;
 		default:
-			fprintf(stderr, "[%lu, %lu]: SyntaxError: Unexpected symbol.\n", g_line_count, g_line_idx);
-			get_next_tok();
+			handle_top_level_expression();
 			break;
 		}
 	}
@@ -783,19 +809,27 @@ int main(int argc, char** argv) {
 	}
 
 	//test lexer
-	/*int x = get_tok();
-	while (x != tok_eof) {
-		std::cout << x << ", " << g_identifier_str << ", " << g_number_str << ", " << std::endl;
-		x = get_tok();
-	}*/
+	//int x = get_tok();
+	//while (x != tok_eof) {
+	//	std::cout << x << ", " << g_identifier_str << ", " << g_number_str << ", " << std::endl;
+	//	x = get_tok();
+	//}
 
-	//test parser
-	main_loop();
+	
+	//initialize by setting up the LLVM IR tools and getting the first token
+	initialize_llvm_module();
+	get_next_tok();
+	
+	//parse all code
+	parse_file();
 
 	if (g_seen_errors) {
 		fprintf(stderr, "\nParsing failed due to listed errors.\n\n");
 		return 1;
 	}
+
+	//parsing was successful, print generated code
+	g_module->print(errs(), nullptr);
 
 	return 0;
 }
