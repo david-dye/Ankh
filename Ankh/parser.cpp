@@ -32,30 +32,13 @@ enum Token {
 	tok_eof = -1,
 
 	// commands
-	tok_fun = -2,
+	tok_def = -2,
 	tok_extern = -3,
-	tok_var = -4
 
 	// primary
-	tok_identifier = -5,
-	tok_num = -6,
+	tok_identifier = -4,
+	tok_num = -5,
 };
-
-enum Type {
-	type_int = -1,
-	type_char = -2,
-	type_double = -3,
-	type_infint =  -4,
-}
-
-static std::map<std::string, Type> g_type_map;
-
-static void initialize_type_map() {
-	g_type_map["int"] = Type::type_int;
-	g_type_map["char"] = Type::type_char;
-	g_type_map["double"] = Type::type_double;
-	g_type_map["infint"] = Type::type_infint;
-}
 
 
 FILE* g_file;							// .ank file that we will lex, parse, and compile to LLVM IR.
@@ -66,7 +49,6 @@ static unsigned long g_line_count = 0;	// Line counter
 bool g_seen_errors = false;				// Whether any errors were encountered while parsing tokens
 
 static std::string g_identifier_str;	// Filled in for tok_identifier
-static Type g_identifier_type;		// Filled in for tok_num, stored as string to enable infinite precision
 static std::string g_number_str;		// Filled in for tok_num, stored as string to enable infinite precision
 
 
@@ -85,9 +67,6 @@ static void initialize_llvm_module() {
 	g_builder = std::make_unique<IRBuilder<>>(*g_llvm_context);
 	return;
 }
-
-// TODO: function definitions should have the arguments types
-// TODO: this implies that we need to separate calls from definitions
 
 // log_compiler_error(str)
 //	Logs a compilation error and returns a nullptr of type Value.
@@ -139,7 +118,6 @@ namespace AST {
 		IntegerAST(const std::string& type, int32_t val) : ExprAST(type), val(val) {} //! If we know that the type is integer, why do we pass the type as an argument?
 		Value* codegen() override;
 	};
-	// TODO: add codegen()
 
 	// InfIntegerAST - Expression class for integers, with infinite precision.
 	class InfIntegerAST : public ExprAST {
@@ -150,7 +128,6 @@ namespace AST {
 		InfIntegerAST(const std::string& type, const std::string& val) : ExprAST(type), val(val) {}
 		Value* codegen() override;
 	};
-	// TODO: add codegen()
 
 	/// VariableExprAST - Expression class for referencing a variable, like "a".
 	class VariableExprAST : public ExprAST {
@@ -188,7 +165,6 @@ namespace AST {
 		if (!L || !R)
 			return nullptr;
 
-		// TODO: need to deal with different types when creating operations
 		switch (op) {
 		case '+':
 			return g_builder->CreateFAdd(L, R, "addtmp"); //can omit the "addtmp" arg in all cases...
@@ -201,20 +177,17 @@ namespace AST {
 		case '<':
 			L = g_builder->CreateFCmpULT(L, R, "cmptmp");
 			// Convert bool 0/1 to double 0.0 or 1.0. This SHOULD be unnecessary in the future
-			// TODO: change to be integer or bool
 			return g_builder->CreateUIToFP(L, Type::getDoubleTy(*g_llvm_context),
 				"booltmp");
 		case '>':
 			L = g_builder->CreateFCmpULT(R, L, "cmptmp");
 			// Convert bool 0/1 to double 0.0 or 1.0. This SHOULD be unnecessary in the future
-			// TODO: change to be integer or bool
 			return g_builder->CreateUIToFP(L, Type::getDoubleTy(*g_llvm_context),
 				"booltmp");
 		default:
 			return log_compiler_error("invalid binary operator");
 		}
 	}
-	// TODO: check https://llvm.org/docs/LangRef.html#type-system
 
 	// CallExprAST - Expression class for function calls.
 	class CallExprAST : public ExprAST {
@@ -269,13 +242,9 @@ namespace AST {
 
 	Function* PrototypeAST::codegen() {
 		// Make the function type:  double(double,double) etc.
-		// TODO: appropriate argument types
-		//! I need a way to keep track of the types in order to call them here
-		//! maybe a map?
-		//! actually using the type field in the ExprAst class would suffice
+		// TODO: Make sure types (function AND argument) are **correct** and not just all doubles
 		std::vector<Type*> Doubles(args.size(), Type::getDoubleTy(*g_llvm_context));
 
-		// TODO: approrpirate function type
 		FunctionType* FT = FunctionType::get(Type::getDoubleTy(*g_llvm_context), Doubles, false);
 
 		Function* F = Function::Create(FT, Function::ExternalLinkage, name, g_module.get());
@@ -294,7 +263,6 @@ namespace AST {
 		std::unique_ptr<ExprAST> body;
 
 	public:
-	 	// TODO: figure out if I want to give this a type
 		FunctionAST(std::unique_ptr<PrototypeAST> proto, std::unique_ptr<ExprAST> body)
 			: proto(std::move(proto)), body(std::move(body)) {
 		}
@@ -318,14 +286,14 @@ namespace AST {
 
 		//verify that the signature of f is the same as the prototype
 		if (f->arg_size() != proto->get_nargs()) {
-			return (Function*)log_compiler_error("Signature does not match forward definition");
+			return (Function*)log_compiler_error("Function cannot be redefined.");
 		}
 		size_t proto_iter = 0;
 		for (auto f_iter = f->args().begin(); f_iter != f->args().end(); ++f_iter) {
 			//f and proto have the same number of args; check if they also have the same names
 			// TODO: need to edit this to check types too
 			if (f_iter->getName().str() != proto->get_arg_by_idx(proto_iter)) {
-				return (Function*)log_compiler_error("Signature does not match forward definition");
+				return (Function*)log_compiler_error("Function cannot be redefined.");
 			}
 		}
 		
@@ -391,17 +359,6 @@ static void read_line() {
 	g_line_idx = 0;
 }
 
-static bool check_for_parentheses() {
-	int i = 0;
-	char current_char = g_line[g_line_idx + i];
-	while (isalnum(current_char) || current_char == '_') {
-		// Eat all alphanumeric characters
-		++i;
-		current_char = g_line[g_line_idx + i];
-	}
-	return g_line[g_line_idx + i] == '(';
-}
-
 
 // gettok()
 //	Returns the next token from the globally defined file.
@@ -439,40 +396,12 @@ static int get_tok() {
 
 		//check if identifier string is a keyword
 		//TODO: edit based on type 
-		if (g_type_map.empty()) {
-			initialize_type_map();
-		}
-		// if (g_identifier_str == "def")
-		// 	return tok_def;
-		//! need to differentiate between variable definition and token
-		//! I should look ahead to see if there are parentheses
-		//! Actually, looking to the next char want solve it as regardless of 
-		//! whether it is a var or a function, I one more token to look through
-		//! before parentheses
-		
-		//! Not sure if removing tok_def may create complexity as here the 
-		//! function name is stll defined later as (probably) a `tok_identifier`
+		if (g_identifier_str == "def")
+			return tok_def;
 		if (g_identifier_str == "extern")
 			return tok_extern;
 
-		for (auto type:g_type_map) {
-			if (g_identifier_str == type.first) {
-				// Token must be for variable or function definition
-				g_identifier_type = type.second;
-				if (check_for_parentheses) {
-					return tok_def;
-				}
-				else {
-					return tok_var;
-				}
-			}
-		}
-
 		//not a keyword, indicate that g_identifier_str is filled
-		//! Should check all places where `tok_identifier` or `tok_def` is used
-		//! Should also check where `g_identifiter_str` is used to see if I need
-		//! to reference `g_identifier_type` there
-		//* Going through `tok_def`
 		return tok_identifier;
 	}
 
@@ -647,7 +576,6 @@ static std::unique_ptr<ExprAST> parse_primary() {
 }
 
 //mapping from binary operator to precedence value
-//! Maybe do a g_binop_precedence?
 static std::map<char, int> binop_precedence;
 
 // set_binop_precedence()
@@ -744,13 +672,9 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 
 // parse_prototype
 //	Parse a function prototype, i.e. its name and arguments
-// TODO: Should be edited to reflect the type of the prototype
 static std::unique_ptr<PrototypeAST> parse_prototype() {
 	// prototype
 	//   := id '(' id* ')'
-	// if (g_cur_tok != tok_identifier)
-	// 	return log_syntax_error_p("Expected function name in prototype");
-
 	if (g_cur_tok != tok_identifier)
 		return log_syntax_error_p("Expected function name in prototype");
 
@@ -777,13 +701,10 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 
 // parse_function()
 //	Parses a function by getting its protoype and its body expression
-// TODO: should be edited to reflect the type of the function
 static std::unique_ptr<FunctionAST> parse_function() {
 	// definition := 'def' prototype expression
 	// TODO: might want to encode the type of the function here
-	//! I'll comment this as the prototype needs to have the type of the
-	//! function
-	// get_next_tok();  // eat def.
+	get_next_tok();  // eat def.
 	auto proto = parse_prototype();
 	if (!proto) {
 		return nullptr;
@@ -834,10 +755,12 @@ static void handle_function() {
 		get_next_tok();
 		return;
 	}
+	else{
+		fprintf(stderr, "parsed function\n");
+	}
 	fn_ptr->codegen();
 }
 
-// TODO: need to deal with the fact that function type will be after extern
 static void handle_extern() {
 	auto extern_ptr = parse_extern();
 	if (!extern_ptr) {
@@ -870,25 +793,24 @@ static void parse_file() {
 	// top := definition | external | expression | ';'
 	while (true) {
 		switch (g_cur_tok) {
-			case tok_eof:
-				return;
-			case ';': // ignore top-level semicolons.
-				//! Not sure if we want to ignore for C-style code?
-				//! Maybe yes because we eat whitespace anyway
-				get_next_tok();
-				break;
-			// For defining function
-			case tok_def:
-				handle_function();
-				break;
-			case tok_extern:
-				handle_extern();
-				break;
-			// TODO: if we want forward definition with prototypes, we edit here
-			default:
-				handle_top_level_expression();
-				break;
-			}
+		case tok_eof:
+			return;
+		case ';': // ignore top-level semicolons.
+		 	//! Not sure if we want to ignore for C-style code?
+			//! Maybe yes because we eat whitespace anyway
+			get_next_tok();
+			break;
+		case tok_def:
+			handle_function();
+			break;
+		case tok_extern:
+			handle_extern();
+			break;
+		// TODO: if we want forward definition with prototypes, we edit here
+		default:
+			handle_top_level_expression();
+			break;
+		}
 	}
 }
 
