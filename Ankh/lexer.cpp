@@ -49,7 +49,7 @@ static unsigned long g_line_count = 0;	// Line counter
 bool g_seen_errors = false;				// Whether any errors were encountered while parsing tokens
 
 static std::string g_identifier_str;	// Filled in for tok_identifier
-static std::string g_number_str;		// Filled in for tok_num
+static std::string g_number_str;		// Filled in for tok_num, stored as string to enable infinite precision
 
 
 //global variables for creating LLVM bytecode
@@ -84,6 +84,7 @@ namespace AST {
 	// ExprAST - Base class for all expression nodes.
 	class ExprAST {
 		std::string type;
+		//! In a more aggressive and realistic language, the “ExprAST” class would probably have a type field.
 
 	public:
 		ExprAST(const std::string& type) : type(type) {}
@@ -114,7 +115,7 @@ namespace AST {
 		int32_t val;
 
 	public:
-		IntegerAST(const std::string& type, int32_t val) : ExprAST(type), val(val) {}
+		IntegerAST(const std::string& type, int32_t val) : ExprAST(type), val(val) {} //! If we know that the type is integer, why do we pass the type as an argument?
 		Value* codegen() override;
 	};
 
@@ -133,7 +134,7 @@ namespace AST {
 		std::string name;
 
 	public:
-		VariableExprAST(const std::string& type, const std::string& name) : ExprAST(type), name(name) {}
+		VariableExprAST(const std::string& type, const std::string& name) : ExprAST(type), name(name) {} //! Should the type be the type of the variable?
 		Value* codegen() override;
 	};
 
@@ -290,6 +291,7 @@ namespace AST {
 		size_t proto_iter = 0;
 		for (auto f_iter = f->args().begin(); f_iter != f->args().end(); ++f_iter) {
 			//f and proto have the same number of args; check if they also have the same names
+			// TODO: need to edit this to check types too
 			if (f_iter->getName().str() != proto->get_arg_by_idx(proto_iter)) {
 				return (Function*)log_compiler_error("Function cannot be redefined.");
 			}
@@ -385,7 +387,7 @@ static int get_tok() {
 
 	if (isalpha(g_line[g_line_idx]) || g_line[g_line_idx] == '_') {
 		//token starts with a letter or an underscore
-		g_identifier_str = g_line[g_line_idx];
+		g_identifier_str = g_line[g_line_idx]; 
 		++g_line_idx;
 		while (isalnum(g_line[g_line_idx]) || g_line[g_line_idx] == '_') {
 			g_identifier_str += g_line[g_line_idx];
@@ -393,6 +395,7 @@ static int get_tok() {
 		}
 
 		//check if identifier string is a keyword
+		//TODO: edit based on type 
 		if (g_identifier_str == "def")
 			return tok_def;
 		if (g_identifier_str == "extern")
@@ -427,6 +430,9 @@ static int get_tok() {
 			g_number_str += g_line[g_line_idx];
 			++g_line_idx;
 		}
+		//! It seems to me that this will identify 123gfadaf as a num
+		//! Actually no as it would end this token and the dfadaf part would be
+		//! another token
 
 		//indicate that g_identifier_str is filled
 		return tok_num;
@@ -443,6 +449,8 @@ static int get_tok() {
 
 		//division operator
 		++g_line_idx;
+		//! Interesting. so if we have a line with just / we will consider it a
+		//! division operator. This kinda makes sense.
 		return '/';
 	}
 
@@ -472,7 +480,7 @@ static int get_next_tok() {
 // parse_double_expr()
 //	Parse a double precision float number expression
 static std::unique_ptr<ExprAST> parse_double_expr() {
-	double d = strtod(g_number_str.c_str(), 0);
+	double d = strtod(g_number_str.c_str(), 0); // `g_number_str` is set by lexer
 	auto result = std::make_unique<DoubleAST>("double", d);
 	get_next_tok(); // consume the number
 	return std::move(result);
@@ -506,19 +514,20 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 	//   := identifier
 	//   := identifier '(' expression* ')'
 
-	std::string id_name = g_identifier_str;
+	std::string id_name = g_identifier_str; // Set by lexer
 
 	get_next_tok();  //eat identifier.
 
 	if (g_cur_tok != '(') {
-		return std::make_unique<VariableExprAST>("TODO", id_name);
+		// TODO: Need to decide on what type this would be
+		return std::make_unique<VariableExprAST>("TODO", id_name); 
 	}
 
 	get_next_tok();  // eat (
 	std::vector<std::unique_ptr<ExprAST>> args;
 	if (g_cur_tok != ')') {
 		while (true) {
-			std::unique_ptr<ExprAST> arg = parse_expression();
+			std::unique_ptr<ExprAST> arg = parse_expression(); //! I'm not sure how parse expression knows how to parse just enough
 			if (arg) {
 				args.push_back(std::move(arg));
 			}
@@ -526,6 +535,8 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 				return nullptr;
 			}
 
+			// We expect this to be `)` or `,` because `parse_expression()` ate 
+			// some tokens
 			if (g_cur_tok == ')')
 				break;
 
@@ -558,6 +569,7 @@ static std::unique_ptr<ExprAST> parse_primary() {
 		return parse_double_expr();
 	case '(':
 		return parse_paren_expr();
+	// TODO: to have C-style functions, we need to add a case for `{`
 	default:
 		return log_syntax_error("unknown token when expecting an expression");
 	}
@@ -595,6 +607,8 @@ static int get_tok_precedence() {
 		set_binop_precedence();
 	}
 
+	// Will automatically deal with invalid tokens because they're not in the
+	// map
 	int tok_prec = binop_precedence[g_cur_tok];
 	if (tok_prec <= 0) {
 		//undefined operator
@@ -627,6 +641,9 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 		//if this is a binop that binds at least as tightly as the current binop,
 		//consume it, otherwise we are done.
 		if (tok_prec < expr_prec)
+		 	// We're already inside another `parse_binop_rhs` call so it will
+			// deal with the current token
+			// This will also return when the next token is not a binop
 			return lhs;
 
 		int binop = g_cur_tok;
@@ -635,6 +652,8 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 		if (!rhs)
 			return nullptr;
 
+		// Now, `g_curr_tok` is the token after rhs as `parse_primary()` ate 
+		// the ones before
 		//if binop binds less tightly with rhs than the operator after rhs, let
 		//the pending operator take rhs as its lhs.
 		int next_prec = get_tok_precedence();
@@ -669,6 +688,8 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 	std::vector<std::string> arg_names;
 	while (get_next_tok() == tok_identifier)
 		arg_names.push_back(g_identifier_str);
+	//! I think this does not support having math operations in the arguments
+	//! of the function as if I have (x + 5) this will raise an error
 	if (g_cur_tok != ')')
 		return log_syntax_error_p("Expected ')' in prototype");
 
@@ -682,12 +703,15 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 //	Parses a function by getting its protoype and its body expression
 static std::unique_ptr<FunctionAST> parse_function() {
 	// definition := 'def' prototype expression
+	// TODO: might want to encode the type of the function here
 	get_next_tok();  // eat def.
 	auto proto = parse_prototype();
 	if (!proto) {
 		return nullptr;
 	}
 
+	//! I think this may not deal with C-style functions properly; how are we
+	//! dealing with the `{` and `}`?
 	auto expr = parse_expression();
 	if (expr) {
 		return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
@@ -698,6 +722,8 @@ static std::unique_ptr<FunctionAST> parse_function() {
 // parse_extern()
 //	Parses an external import.
 static std::unique_ptr<PrototypeAST> parse_extern() {
+	//! At least according to the manual, forward declaration requirese extern
+	//! Might be able to change that by parsing a prototype only without extern
 	// external ::= 'extern' prototype
 	get_next_tok();  // eat extern.
 	return parse_prototype();
@@ -707,6 +733,9 @@ static std::unique_ptr<FunctionAST> parse_top_level_expression() {
 	/// toplevelexpr := expression
 	if (auto expr = parse_expression()) {
 		// Make an anonymous proto.
+		//! I think this creates a function with no name. this deals with cases
+		//! like {int x = 10; x+10;} in global scope
+		// TODO: might want to add support for `{` and `}` here
 		auto proto = std::make_unique<PrototypeAST>("TODO", "", std::vector<std::string>());
 		return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
 	}
@@ -764,6 +793,8 @@ static void parse_file() {
 		case tok_eof:
 			return;
 		case ';': // ignore top-level semicolons.
+		 	//! Not sure if we want to ignore for C-style code?
+			//! Maybe yes because we eat whitespace anyway
 			get_next_tok();
 			break;
 		case tok_def:
@@ -772,6 +803,7 @@ static void parse_file() {
 		case tok_extern:
 			handle_extern();
 			break;
+		// TODO: if we want forward definition with prototypes, we edit here
 		default:
 			handle_top_level_expression();
 			break;
