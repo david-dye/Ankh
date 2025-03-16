@@ -66,6 +66,7 @@ static void initialize_type_map() {
 }
 
 
+
 FILE* g_file;							// .ank file that we will lex, parse, and compile to LLVM IR.
 
 static std::string g_line;				// Full line of standard input
@@ -109,6 +110,23 @@ Value* log_compiler_error(const char* str) {
 // Abstract Syntax Tree (AST)
 //======================================================================================================
 namespace AST {
+	static Type* local_type_to_llvm(LocalType type) {
+		switch (type) {
+			case LocalType::type_int:
+				return Type::getInt32Ty(*g_llvm_context);
+			case LocalType::type_double:
+				return Type::getDoubleTy(*g_llvm_context);
+				break;
+			//! Maybe we don't need chars
+			case LocalType::type_char:
+				return Type::getInt8Ty(*g_llvm_context);
+				break;
+			// TODO: deal with `type_infint`, maybe getIntNTy? or Maybe Double?
+			default:
+				log_compiler_error("Unsupported type\n");
+				break;
+		}
+	}
 	// ExprAST - Base class for all expression nodes.
 	class ExprAST {
 		// TODO: change all of these to have type enum
@@ -265,10 +283,11 @@ namespace AST {
 	class PrototypeAST : public ExprAST {
 		std::string name;
 		std::vector<std::string> args; //this will likely need to contain more than just the name of arguments
+		std::map<std::string, LocalType> arg_types; //this will likely need to contain more than just the name of arguments
 
 	public:
-		PrototypeAST(const LocalType type, const std::string& name, std::vector<std::string> args)
-			: ExprAST(type), name(name), args(std::move(args)) {
+		PrototypeAST(const LocalType type, const std::string& name, std::vector<std::string> args, std::map<std::string, LocalType> arg_types)
+			: ExprAST(type), name(name), args(std::move(args)), arg_types(std::move(arg_types)) {
 		}
 
 		Function* codegen() override;
@@ -276,6 +295,7 @@ namespace AST {
 		const std::string& get_name() const { return name; }
 		const size_t get_nargs() const { return args.size(); }
 		const std::string& get_arg_by_idx(size_t i) const { assert(i < get_nargs()); return args[i]; }
+		const LocalType get_arg_type(std::string arg) { return arg_types[arg]; }
 	};
 
 	Function* PrototypeAST::codegen() {
@@ -284,10 +304,16 @@ namespace AST {
 		//! I need a way to keep track of the types in order to call them here
 		//! maybe a map?
 		//! actually using the type field in the ExprAst class would suffice
-		std::vector<Type*> Doubles(args.size(), Type::getDoubleTy(*g_llvm_context));
+		std::vector<Type*> Args(args.size());
+		for (int i = 0; i < args.size(); ++i) {
+			std::string arg = args[i];
+			LocalType arg_type = arg_types[arg];
+			Args[i] = local_type_to_llvm(arg_type);
+		}
 
 		// TODO: approrpirate function type
-		FunctionType* FT = FunctionType::get(Type::getDoubleTy(*g_llvm_context), Doubles, false);
+		Type* llvm_type = local_type_to_llvm(get_type());
+		FunctionType* FT = FunctionType::get(llvm_type, Args, false);
 
 		Function* F = Function::Create(FT, Function::ExternalLinkage, name, g_module.get());
 
@@ -329,7 +355,6 @@ namespace AST {
 
 		//verify that the signature of f is the same as the prototype
 		if (f->arg_size() != proto->get_nargs()) {
-			fprintf(stderr, "f->arg_size(): %i, proto->get_nargs(): %i\n", f->arg_size(), proto->get_nargs());
 			return (Function*)log_compiler_error("Signature does not match forward definition");
 		}
 		size_t proto_iter = 0;
@@ -337,7 +362,6 @@ namespace AST {
 			//f and proto have the same number of args; check if they also have the same names
 			// TODO: need to edit this to check types too
 			if (f_iter->getName().str() != proto->get_arg_by_idx(proto_iter)) {
-				fprintf(stderr, "f_iter->getName().str(): %s, proto->get_arg_by_idx(proto_iter): %s\n", f_iter->getName().str().c_str(), proto->get_arg_by_idx(proto_iter).c_str());
 				return (Function*)log_compiler_error("Signature does not match forward definition");
 			}
 			++proto_iter;
@@ -796,26 +820,27 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 
 	//read the list of argument names.
 	// TODO: maybe also add arg_types?
-	std::vector<std::string> arg_names;
-	int next_tok = get_next_tok();
+	std::vector<std::string> args;
+	std::map<std::string, LocalType> arg_types;
 	while (true) {
 		//* Dealing with types of variables in function prototype
-		if (next_tok != tok_var) {
+		if (get_next_tok() != tok_var) {
 			break;	
 		}
+		LocalType arg_type = g_type_map[g_identifier_str];
 		if (get_next_tok() != tok_identifier) {
 			return log_syntax_error_p("Variable name was not specified");
 		}
-		arg_names.push_back(g_identifier_str);
+		args.push_back(g_identifier_str);
+		arg_types[g_identifier_str] = arg_type;
 
-		next_tok = get_next_tok();
+		int next_tok = get_next_tok();
 		if (next_tok == ')') {
 			break;
 		}
 		if (next_tok != ',') {
 			return log_syntax_error_p("Invalid function argument");
 		}
-		next_tok = get_next_tok();
 	}
 	
 	// while (get_next_tok() == tok_identifier)
@@ -828,7 +853,7 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 	//success.
 	get_next_tok();  // eat ')'.
 
-	return std::make_unique<PrototypeAST>(type, fn_name, std::move(arg_names));
+	return std::make_unique<PrototypeAST>(type, fn_name, std::move(args), std::move(arg_types));
 }
 
 // parse_function()
@@ -872,7 +897,7 @@ static std::unique_ptr<FunctionAST> parse_top_level_expression() {
 		//! like {int x = 10; x+10;} in global scope
 		// TODO: might want to add support for `{` and `}` here
 		// TODO: deal with type
-		auto proto = std::make_unique<PrototypeAST>(LocalType::type_unsupported, "", std::vector<std::string>());
+		auto proto = std::make_unique<PrototypeAST>(LocalType::type_int, "", std::vector<std::string>(), std::map<std::string, LocalType>());
 		return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
 	}
 	return nullptr;
