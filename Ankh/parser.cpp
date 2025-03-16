@@ -687,9 +687,11 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 	//read the list of argument names.
 	std::vector<std::string> arg_names;
 	while (get_next_tok() == tok_identifier)
+	 	printf("g_identifier_string: %s\n", g_identifier_str.c_str());
 		arg_names.push_back(g_identifier_str);
 	//! I think this does not support having math operations in the arguments
 	//! of the function as if I have (x + 5) this will raise an error
+	printf("g_cur_tok: %i\n", g_cur_tok);
 	if (g_cur_tok != ')')
 		return log_syntax_error_p("Expected ')' in prototype");
 

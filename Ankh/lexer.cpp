@@ -1,3 +1,10 @@
+/*!
+	Plan for dealing with types:
+		- Change lexer
+		- Change parser
+		- Change codegen
+
+*/
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -34,27 +41,28 @@ enum Token {
 	// commands
 	tok_fun = -2,
 	tok_extern = -3,
-	tok_var = -4
+	tok_var = -4,
 
 	// primary
 	tok_identifier = -5,
 	tok_num = -6,
 };
 
-enum Type {
+enum LocalType {
+	type_unsupported = 0,
 	type_int = -1,
 	type_char = -2,
 	type_double = -3,
 	type_infint =  -4,
-}
+};
 
-static std::map<std::string, Type> g_type_map;
+static std::map<std::string, LocalType> g_type_map;
 
 static void initialize_type_map() {
-	g_type_map["int"] = Type::type_int;
-	g_type_map["char"] = Type::type_char;
-	g_type_map["double"] = Type::type_double;
-	g_type_map["infint"] = Type::type_infint;
+	g_type_map["int"] = LocalType::type_int;
+	g_type_map["char"] = LocalType::type_char;
+	g_type_map["double"] = LocalType::type_double;
+	g_type_map["infint"] = LocalType::type_infint;
 }
 
 
@@ -66,7 +74,6 @@ static unsigned long g_line_count = 0;	// Line counter
 bool g_seen_errors = false;				// Whether any errors were encountered while parsing tokens
 
 static std::string g_identifier_str;	// Filled in for tok_identifier
-static Type g_identifier_type;		// Filled in for tok_num, stored as string to enable infinite precision
 static std::string g_number_str;		// Filled in for tok_num, stored as string to enable infinite precision
 
 
@@ -104,13 +111,16 @@ Value* log_compiler_error(const char* str) {
 namespace AST {
 	// ExprAST - Base class for all expression nodes.
 	class ExprAST {
-		std::string type;
+		// TODO: change all of these to have type enum
+		// TODO: trace all the mentions of the variable `ExprAST::type` to make 
+		// TODO: sure that they're handled properly as enums
+		LocalType type;
 		//! In a more aggressive and realistic language, the “ExprAST” class would probably have a type field.
 
 	public:
-		ExprAST(const std::string& type) : type(type) {}
+		ExprAST(const LocalType type) : type(type) {}
 
-		const std::string get_type() const {
+		const LocalType get_type() const {
 			return type;
 		}
 
@@ -123,7 +133,7 @@ namespace AST {
 		double val;
 
 	public:
-		DoubleAST(const std::string& type, double val) : ExprAST(type), val(val) {}
+		DoubleAST(const LocalType type, double val) : ExprAST(type), val(val) {}
 		Value* codegen() override;
 	};
 
@@ -136,7 +146,7 @@ namespace AST {
 		int32_t val;
 
 	public:
-		IntegerAST(const std::string& type, int32_t val) : ExprAST(type), val(val) {} //! If we know that the type is integer, why do we pass the type as an argument?
+		IntegerAST(const LocalType type, int32_t val) : ExprAST(type), val(val) {} //! If we know that the type is integer, why do we pass the type as an argument?
 		Value* codegen() override;
 	};
 	// TODO: add codegen()
@@ -147,7 +157,7 @@ namespace AST {
 		std::string val;
 
 	public:
-		InfIntegerAST(const std::string& type, const std::string& val) : ExprAST(type), val(val) {}
+		InfIntegerAST(const LocalType type, const std::string& val) : ExprAST(type), val(val) {}
 		Value* codegen() override;
 	};
 	// TODO: add codegen()
@@ -157,7 +167,7 @@ namespace AST {
 		std::string name;
 
 	public:
-		VariableExprAST(const std::string& type, const std::string& name) : ExprAST(type), name(name) {} //! Should the type be the type of the variable?
+		VariableExprAST(const LocalType type, const std::string& name) : ExprAST(type), name(name) {} //! Should the type be the type of the variable?
 		Value* codegen() override;
 	};
 
@@ -175,7 +185,8 @@ namespace AST {
 		std::unique_ptr<ExprAST> lhs, rhs;
 
 	public:
-		BinaryExprAST(const std::string& type, char op, std::unique_ptr<ExprAST> lhs, std::unique_ptr<ExprAST> rhs)
+	 	// TODO: deal with the type here
+		BinaryExprAST(const LocalType type, char op, std::unique_ptr<ExprAST> lhs, std::unique_ptr<ExprAST> rhs)
 			: ExprAST(type), op(op), lhs(std::move(lhs)), rhs(std::move(rhs)) {
 		}
 		Value* codegen() override;
@@ -222,7 +233,7 @@ namespace AST {
 		std::vector<std::unique_ptr<ExprAST>> args;
 
 	public:
-		CallExprAST(const std::string& type, const std::string& callee, std::vector<std::unique_ptr<ExprAST>> args)
+		CallExprAST(const LocalType type, const std::string& callee, std::vector<std::unique_ptr<ExprAST>> args)
 			: ExprAST(type), callee(callee), args(std::move(args)) {
 		}
 		Value* codegen() override;
@@ -256,7 +267,7 @@ namespace AST {
 		std::vector<std::string> args; //this will likely need to contain more than just the name of arguments
 
 	public:
-		PrototypeAST(const std::string& type, const std::string& name, std::vector<std::string> args)
+		PrototypeAST(const LocalType type, const std::string& name, std::vector<std::string> args)
 			: ExprAST(type), name(name), args(std::move(args)) {
 		}
 
@@ -318,6 +329,7 @@ namespace AST {
 
 		//verify that the signature of f is the same as the prototype
 		if (f->arg_size() != proto->get_nargs()) {
+			fprintf(stderr, "f->arg_size(): %i, proto->get_nargs(): %i\n", f->arg_size(), proto->get_nargs());
 			return (Function*)log_compiler_error("Signature does not match forward definition");
 		}
 		size_t proto_iter = 0;
@@ -325,8 +337,10 @@ namespace AST {
 			//f and proto have the same number of args; check if they also have the same names
 			// TODO: need to edit this to check types too
 			if (f_iter->getName().str() != proto->get_arg_by_idx(proto_iter)) {
+				fprintf(stderr, "f_iter->getName().str(): %s, proto->get_arg_by_idx(proto_iter): %s\n", f_iter->getName().str().c_str(), proto->get_arg_by_idx(proto_iter).c_str());
 				return (Function*)log_compiler_error("Signature does not match forward definition");
 			}
+			++proto_iter;
 		}
 		
 		// Create a new basic block to start insertion into.
@@ -380,6 +394,7 @@ std::unique_ptr<PrototypeAST> log_syntax_error_p(const char* str) {
 // read_line()
 //	Reads a line from a file into g_line 
 //	and sets g_line_idx to 0.
+// TODO: make this use ; rather than `\n` to match C syntax
 static void read_line() {
 	++g_line_count;
 	g_line = fgetc(g_file);
@@ -394,11 +409,15 @@ static void read_line() {
 static bool check_for_parentheses() {
 	int i = 0;
 	char current_char = g_line[g_line_idx + i];
-	while (isalnum(current_char) || current_char == '_') {
+	while (
+		isalnum(current_char) || current_char == '_' || current_char == ' ' 
+		|| current_char == '\t' || current_char == '\r'
+	) {
 		// Eat all alphanumeric characters
 		++i;
 		current_char = g_line[g_line_idx + i];
 	}
+	fprintf(stderr, "g_line[g_line_idx + i]: %i\n", g_line[g_line_idx + i]);
 	return g_line[g_line_idx + i] == '(';
 }
 
@@ -442,8 +461,6 @@ static int get_tok() {
 		if (g_type_map.empty()) {
 			initialize_type_map();
 		}
-		// if (g_identifier_str == "def")
-		// 	return tok_def;
 		//! need to differentiate between variable definition and token
 		//! I should look ahead to see if there are parentheses
 		//! Actually, looking to the next char want solve it as regardless of 
@@ -456,11 +473,11 @@ static int get_tok() {
 			return tok_extern;
 
 		for (auto type:g_type_map) {
+			//! Currently, `g_identifier_str` is set to the type when parsing 
+			//! the type, maybe this is sub-optimal
 			if (g_identifier_str == type.first) {
-				// Token must be for variable or function definition
-				g_identifier_type = type.second;
-				if (check_for_parentheses) {
-					return tok_def;
+				if (check_for_parentheses()) {
+					return tok_fun; //! was tok_def
 				}
 				else {
 					return tok_var;
@@ -471,7 +488,8 @@ static int get_tok() {
 		//not a keyword, indicate that g_identifier_str is filled
 		//! Should check all places where `tok_identifier` or `tok_def` is used
 		//! Should also check where `g_identifiter_str` is used to see if I need
-		//! to reference `g_identifier_type` there
+		//! to reference `g_definition_type` there. Edit: `g_definition_type`
+		//! was removed; using `g_identifier_str` for both purposes now
 		//* Going through `tok_def`
 		return tok_identifier;
 	}
@@ -544,7 +562,9 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 // get_next_tok()
 //	Update the current token g_cur_tok using the get_tok() function
 static int get_next_tok() {
-	return g_cur_tok = get_tok();
+	g_cur_tok = get_tok();
+	fprintf(stderr, "get_next_tok: g_cur_token: %i\n", g_cur_tok);
+	return g_cur_tok;
 }
 
 
@@ -552,7 +572,7 @@ static int get_next_tok() {
 //	Parse a double precision float number expression
 static std::unique_ptr<ExprAST> parse_double_expr() {
 	double d = strtod(g_number_str.c_str(), 0); // `g_number_str` is set by lexer
-	auto result = std::make_unique<DoubleAST>("double", d);
+	auto result = std::make_unique<DoubleAST>(LocalType::type_double, d);
 	get_next_tok(); // consume the number
 	return std::move(result);
 }
@@ -591,7 +611,7 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 
 	if (g_cur_tok != '(') {
 		// TODO: Need to decide on what type this would be
-		return std::make_unique<VariableExprAST>("TODO", id_name); 
+		return std::make_unique<VariableExprAST>(LocalType::type_unsupported, id_name); 
 	}
 
 	get_next_tok();  // eat (
@@ -621,7 +641,8 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 	// Eat the ')'.
 	get_next_tok();
 
-	return std::make_unique<CallExprAST>("none", id_name, std::move(args));
+	// TODO: deal with type
+	return std::make_unique<CallExprAST>(LocalType::type_unsupported, id_name, std::move(args));
 }
 
 // parse_primary()
@@ -745,25 +766,60 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 // parse_prototype
 //	Parse a function prototype, i.e. its name and arguments
 // TODO: Should be edited to reflect the type of the prototype
+// TODO: Have to distinguish between function calling and definition (one 
+// TODO: does not have type before) but maybe already dealt with as before we 
+// TODO: had `def` keyword
 static std::unique_ptr<PrototypeAST> parse_prototype() {
 	// prototype
 	//   := id '(' id* ')'
 	// if (g_cur_tok != tok_identifier)
 	// 	return log_syntax_error_p("Expected function name in prototype");
 
-	if (g_cur_tok != tok_identifier)
-		return log_syntax_error_p("Expected function name in prototype");
+	// Handling the type of the funciton
+	if (g_cur_tok != tok_fun) {
+		return log_syntax_error_p("Expected function type in prototype");
+	}
+	
+	if (g_type_map.find(g_identifier_str) == g_type_map.end()) {
+		return log_syntax_error_p("Unsupported function type");
+	}
+	LocalType type = g_type_map[g_identifier_str];
+	// TODO: trace `tok_def`
 
-	std::string fn_name = g_identifier_str;
+	// Parsing the identifier of the function
 	get_next_tok();
+	std::string fn_name = g_identifier_str;
 
+	get_next_tok();
 	if (g_cur_tok != '(')
 		return log_syntax_error_p("Expected '(' in prototype");
 
 	//read the list of argument names.
+	// TODO: maybe also add arg_types?
 	std::vector<std::string> arg_names;
-	while (get_next_tok() == tok_identifier)
+	int next_tok = get_next_tok();
+	while (true) {
+		//* Dealing with types of variables in function prototype
+		if (next_tok != tok_var) {
+			break;	
+		}
+		if (get_next_tok() != tok_identifier) {
+			return log_syntax_error_p("Variable name was not specified");
+		}
 		arg_names.push_back(g_identifier_str);
+
+		next_tok = get_next_tok();
+		if (next_tok == ')') {
+			break;
+		}
+		if (next_tok != ',') {
+			return log_syntax_error_p("Invalid function argument");
+		}
+		next_tok = get_next_tok();
+	}
+	
+	// while (get_next_tok() == tok_identifier)
+	// 	arg_names.push_back(g_identifier_str);
 	//! I think this does not support having math operations in the arguments
 	//! of the function as if I have (x + 5) this will raise an error
 	if (g_cur_tok != ')')
@@ -772,7 +828,7 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 	//success.
 	get_next_tok();  // eat ')'.
 
-	return std::make_unique<PrototypeAST>("TODO", fn_name, std::move(arg_names));
+	return std::make_unique<PrototypeAST>(type, fn_name, std::move(arg_names));
 }
 
 // parse_function()
@@ -815,7 +871,8 @@ static std::unique_ptr<FunctionAST> parse_top_level_expression() {
 		//! I think this creates a function with no name. this deals with cases
 		//! like {int x = 10; x+10;} in global scope
 		// TODO: might want to add support for `{` and `}` here
-		auto proto = std::make_unique<PrototypeAST>("TODO", "", std::vector<std::string>());
+		// TODO: deal with type
+		auto proto = std::make_unique<PrototypeAST>(LocalType::type_unsupported, "", std::vector<std::string>());
 		return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
 	}
 	return nullptr;
@@ -878,13 +935,14 @@ static void parse_file() {
 				get_next_tok();
 				break;
 			// For defining function
-			case tok_def:
+			case tok_fun: //! was tok_def
 				handle_function();
 				break;
 			case tok_extern:
 				handle_extern();
 				break;
 			// TODO: if we want forward definition with prototypes, we edit here
+			// TODO: add case for `tok_var`
 			default:
 				handle_top_level_expression();
 				break;
