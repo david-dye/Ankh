@@ -32,7 +32,6 @@
 using namespace llvm;
 
 
-
 // The lexer returns tokens [0-255] if it is an unknown character, otherwise one
 // of these for known things.
 enum Token {
@@ -76,6 +75,7 @@ bool g_seen_errors = false;				// Whether any errors were encountered while pars
 
 static std::string g_identifier_str;	// Filled in for tok_identifier
 static std::string g_number_str;		// Filled in for tok_num, stored as string to enable infinite precision
+static bool g_number_has_period; 		// Helps distinguish between floats and ints
 
 
 //global variables for creating LLVM bytecode
@@ -93,9 +93,6 @@ static void initialize_llvm_module() {
 	g_builder = std::make_unique<IRBuilder<>>(*g_llvm_context);
 	return;
 }
-
-// TODO: function definitions should have the arguments types
-// TODO: this implies that we need to separate calls from definitions
 
 // log_compiler_error(str)
 //	Logs a compilation error and returns a nullptr of type Value.
@@ -124,16 +121,13 @@ namespace AST {
 			// TODO: deal with `type_infint`, maybe getIntNTy? or Maybe Double?
 			default:
 				log_compiler_error("Unsupported type\n");
+				return Type::getVoidTy(*g_llvm_context);
 				break;
 		}
 	}
 	// ExprAST - Base class for all expression nodes.
 	class ExprAST {
-		// TODO: change all of these to have type enum
-		// TODO: trace all the mentions of the variable `ExprAST::type` to make 
-		// TODO: sure that they're handled properly as enums
 		LocalType type;
-		//! In a more aggressive and realistic language, the “ExprAST” class would probably have a type field.
 
 	public:
 		ExprAST(const LocalType type) : type(type) {}
@@ -167,7 +161,14 @@ namespace AST {
 		IntegerAST(const LocalType type, int32_t val) : ExprAST(type), val(val) {} //! If we know that the type is integer, why do we pass the type as an argument?
 		Value* codegen() override;
 	};
-	// TODO: add codegen()
+
+	//* Can use the numbits here to create an infint
+	//* Can we use the ElementCount::getScalable to help with this?
+	//* Note that ConstantInt::get can take a vector to specify the number which
+	//* can be used for infint https://llvm.org/doxygen/classllvm_1_1APInt.html#a4a46ba6ad1c259b7fa9bc638ebb0a2f8
+	Value* IntegerAST::codegen() {
+		return ConstantInt::get(*g_llvm_context, APInt(32, val));
+	}
 
 	// InfIntegerAST - Expression class for integers, with infinite precision.
 	class InfIntegerAST : public ExprAST {
@@ -207,17 +208,49 @@ namespace AST {
 		BinaryExprAST(const LocalType type, char op, std::unique_ptr<ExprAST> lhs, std::unique_ptr<ExprAST> rhs)
 			: ExprAST(type), op(op), lhs(std::move(lhs)), rhs(std::move(rhs)) {
 		}
+		Value* _less_than_operator_expr(std::unique_ptr<ExprAST> lhs, std::unique_ptr<ExprAST> rhs);
 		Value* codegen() override;
 	}; 
+
+	Value* BinaryExprAST::_less_than_operator_expr(
+		std::unique_ptr<ExprAST> lhs, std::unique_ptr<ExprAST> rhs
+	) {
+		LocalType lhs_type = lhs->get_type();
+		LocalType rhs_type = rhs->get_type();
+		Value* L = lhs->codegen();
+		Value* R = rhs->codegen();
+		if (
+			lhs_type == LocalType::type_int
+			&& rhs_type == LocalType::type_int
+		) {
+			return g_builder->CreateICmpULT(L, R, "cmptmp");
+		}
+		else if (
+			lhs_type == LocalType::type_double
+			&& rhs_type == LocalType::type_double
+		) {
+			return g_builder->CreateFCmpULT(L, R, "cmptmp");
+		}
+		// TODO: see if this works properly
+		else if (
+			(lhs_type == LocalType::type_int
+			&& rhs_type == LocalType::type_double)
+			|| (lhs_type == LocalType::type_double
+			&& rhs_type == LocalType::type_int) 
+		) {
+			return g_builder->CreateFCmpULT(L, R, "cmptmp");
+		}
+		return log_compiler_error("Comparision between types is unhandled");
+	}
 	
 	Value* BinaryExprAST::codegen() {
 		//L and R **MUST** have the same type OR we must do type conversions
 		Value* L = lhs->codegen();
 		Value* R = rhs->codegen();
-		if (!L || !R)
+		if (!L || !R) {
 			return nullptr;
+		}
 
-		// TODO: need to deal with different types when creating operations
 		switch (op) {
 		case '+':
 			return g_builder->CreateFAdd(L, R, "addtmp"); //can omit the "addtmp" arg in all cases...
@@ -228,17 +261,9 @@ namespace AST {
 		case '/':
 			return g_builder->CreateFDiv(L, R, "multmp");
 		case '<':
-			L = g_builder->CreateFCmpULT(L, R, "cmptmp");
-			// Convert bool 0/1 to double 0.0 or 1.0. This SHOULD be unnecessary in the future
-			// TODO: change to be integer or bool
-			return g_builder->CreateUIToFP(L, Type::getDoubleTy(*g_llvm_context),
-				"booltmp");
+			return this->_less_than_operator_expr(std::move(lhs), std::move(rhs));
 		case '>':
-			L = g_builder->CreateFCmpULT(R, L, "cmptmp");
-			// Convert bool 0/1 to double 0.0 or 1.0. This SHOULD be unnecessary in the future
-			// TODO: change to be integer or bool
-			return g_builder->CreateUIToFP(L, Type::getDoubleTy(*g_llvm_context),
-				"booltmp");
+			return this->_less_than_operator_expr(std::move(rhs), std::move(lhs));
 		default:
 			return log_compiler_error("invalid binary operator");
 		}
@@ -260,26 +285,29 @@ namespace AST {
 	Value* CallExprAST::codegen() {
 		// Look up the name in the global module table.
 		Function* callee_f = g_module->getFunction(callee);
-		if (!callee_f)
+		if (!callee_f) {
 			return log_compiler_error("Unknown function referenced");
+		}
 
 		// If argument mismatch error.
-		if (callee_f->arg_size() != args.size())
+		if (callee_f->arg_size() != args.size()) {
 			return log_compiler_error("Incorrect # arguments passed");
+		}
 
 		std::vector<Value*> args_v;
 		for (size_t i = 0, e = args.size(); i != e; ++i) {
 			args_v.push_back(args[i]->codegen());
-			if (!args_v.back())
+			if (!args_v.back()) {
 				return nullptr;
+			}
 		}
 
 		return g_builder->CreateCall(callee_f, args_v, "calltmp");
 	}
 
 	// PrototypeAST - This class represents the "prototype" for a function,
-	// which captures its name, type, and argument names (thus implicitly the number
-	// of arguments the function takes).
+	// which captures its name, type, and argument names and type (thus
+	// implicitly the number of arguments the function takes).
 	class PrototypeAST : public ExprAST {
 		std::string name;
 		std::vector<std::string> args; //this will likely need to contain more than just the name of arguments
@@ -300,10 +328,6 @@ namespace AST {
 
 	Function* PrototypeAST::codegen() {
 		// Make the function type:  double(double,double) etc.
-		// TODO: appropriate argument types
-		//! I need a way to keep track of the types in order to call them here
-		//! maybe a map?
-		//! actually using the type field in the ExprAst class would suffice
 		std::vector<Type*> Args(args.size());
 		for (int i = 0; i < args.size(); ++i) {
 			std::string arg = args[i];
@@ -331,7 +355,7 @@ namespace AST {
 		std::unique_ptr<ExprAST> body;
 
 	public:
-	 	// TODO: figure out if I want to give this a type
+	 	// TODO: figure out if we want to give this a type
 		FunctionAST(std::unique_ptr<PrototypeAST> proto, std::unique_ptr<ExprAST> body)
 			: proto(std::move(proto)), body(std::move(body)) {
 		}
@@ -441,7 +465,6 @@ static bool check_for_parentheses() {
 		++i;
 		current_char = g_line[g_line_idx + i];
 	}
-	fprintf(stderr, "g_line[g_line_idx + i]: %i\n", g_line[g_line_idx + i]);
 	return g_line[g_line_idx + i] == '(';
 }
 
@@ -485,23 +508,14 @@ static int get_tok() {
 		if (g_type_map.empty()) {
 			initialize_type_map();
 		}
-		//! need to differentiate between variable definition and token
-		//! I should look ahead to see if there are parentheses
-		//! Actually, looking to the next char want solve it as regardless of 
-		//! whether it is a var or a function, I one more token to look through
-		//! before parentheses
-		
-		//! Not sure if removing tok_def may create complexity as here the 
-		//! function name is stll defined later as (probably) a `tok_identifier`
+
 		if (g_identifier_str == "extern")
 			return tok_extern;
 
 		for (auto type:g_type_map) {
-			//! Currently, `g_identifier_str` is set to the type when parsing 
-			//! the type, maybe this is sub-optimal
 			if (g_identifier_str == type.first) {
 				if (check_for_parentheses()) {
-					return tok_fun; //! was tok_def
+					return tok_fun;
 				}
 				else {
 					return tok_var;
@@ -509,12 +523,7 @@ static int get_tok() {
 			}
 		}
 
-		//not a keyword, indicate that g_identifier_str is filled
-		//! Should check all places where `tok_identifier` or `tok_def` is used
-		//! Should also check where `g_identifiter_str` is used to see if I need
-		//! to reference `g_definition_type` there. Edit: `g_definition_type`
-		//! was removed; using `g_identifier_str` for both purposes now
-		//* Going through `tok_def`
+		// not a keyword, indicate that g_identifier_str is filled
 		return tok_identifier;
 	}
 
@@ -543,10 +552,8 @@ static int get_tok() {
 			g_number_str += g_line[g_line_idx];
 			++g_line_idx;
 		}
-		//! It seems to me that this will identify 123gfadaf as a num
-		//! Actually no as it would end this token and the dfadaf part would be
-		//! another token
 
+		g_number_has_period = seen_period;
 		//indicate that g_identifier_str is filled
 		return tok_num;
 	}
@@ -587,7 +594,6 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 //	Update the current token g_cur_tok using the get_tok() function
 static int get_next_tok() {
 	g_cur_tok = get_tok();
-	fprintf(stderr, "get_next_tok: g_cur_token: %i\n", g_cur_tok);
 	return g_cur_tok;
 }
 
@@ -599,6 +605,29 @@ static std::unique_ptr<ExprAST> parse_double_expr() {
 	auto result = std::make_unique<DoubleAST>(LocalType::type_double, d);
 	get_next_tok(); // consume the number
 	return std::move(result);
+}
+
+// parse_int_expr()
+//	Parse an integer expression
+static std::unique_ptr<ExprAST> parse_int_expr() {
+	//* I may need to see how many digits the number is and based on that may
+	//* parse using more sophisticated function (e.g., create a vector and
+	//* parse as an InfIntAST class)
+	int d = std::stoi(g_number_str); // `g_number_str` is set by lexer
+	auto result = std::make_unique<IntegerAST>(LocalType::type_int, d);
+	get_next_tok(); // consume the number
+	return std::move(result);
+}
+
+// parse_num_expr()
+//	Parse a number as either double or int
+static std::unique_ptr<ExprAST> parse_num_expr() {
+	if (g_number_has_period) {
+		return parse_double_expr();
+	}
+	else {
+		return parse_int_expr();
+	}
 }
 
 // parse_paren_expr()
@@ -642,7 +671,7 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 	std::vector<std::unique_ptr<ExprAST>> args;
 	if (g_cur_tok != ')') {
 		while (true) {
-			std::unique_ptr<ExprAST> arg = parse_expression(); //! I'm not sure how parse expression knows how to parse just enough
+			std::unique_ptr<ExprAST> arg = parse_expression();
 			if (arg) {
 				args.push_back(std::move(arg));
 			}
@@ -651,7 +680,7 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 			}
 
 			// We expect this to be `)` or `,` because `parse_expression()` ate 
-			// some tokens
+			// ate a tokens
 			if (g_cur_tok == ')')
 				break;
 
@@ -680,9 +709,7 @@ static std::unique_ptr<ExprAST> parse_primary() {
 	case tok_identifier:
 		return parse_identifier_expr();
 	case tok_num:
-		//TODO
-		//THIS ONLY WORKS FOR DOUBLES CURRENTLY!!!
-		return parse_double_expr();
+		return parse_num_expr();
 	case '(':
 		return parse_paren_expr();
 	// TODO: to have C-style functions, we need to add a case for `{`
@@ -790,9 +817,6 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 // parse_prototype
 //	Parse a function prototype, i.e. its name and arguments
 // TODO: Should be edited to reflect the type of the prototype
-// TODO: Have to distinguish between function calling and definition (one 
-// TODO: does not have type before) but maybe already dealt with as before we 
-// TODO: had `def` keyword
 static std::unique_ptr<PrototypeAST> parse_prototype() {
 	// prototype
 	//   := id '(' id* ')'
@@ -808,7 +832,6 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 		return log_syntax_error_p("Unsupported function type");
 	}
 	LocalType type = g_type_map[g_identifier_str];
-	// TODO: trace `tok_def`
 
 	// Parsing the identifier of the function
 	get_next_tok();
@@ -819,7 +842,6 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 		return log_syntax_error_p("Expected '(' in prototype");
 
 	//read the list of argument names.
-	// TODO: maybe also add arg_types?
 	std::vector<std::string> args;
 	std::map<std::string, LocalType> arg_types;
 	while (true) {
@@ -862,9 +884,6 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 static std::unique_ptr<FunctionAST> parse_function() {
 	// definition := 'def' prototype expression
 	// TODO: might want to encode the type of the function here
-	//! I'll comment this as the prototype needs to have the type of the
-	//! function
-	// get_next_tok();  // eat def.
 	auto proto = parse_prototype();
 	if (!proto) {
 		return nullptr;
@@ -893,11 +912,13 @@ static std::unique_ptr<FunctionAST> parse_top_level_expression() {
 	/// toplevelexpr := expression
 	if (auto expr = parse_expression()) {
 		// Make an anonymous proto.
-		//! I think this creates a function with no name. this deals with cases
-		//! like {int x = 10; x+10;} in global scope
 		// TODO: might want to add support for `{` and `}` here
-		// TODO: deal with type
-		auto proto = std::make_unique<PrototypeAST>(LocalType::type_int, "", std::vector<std::string>(), std::map<std::string, LocalType>());
+		//* See if int is the appropriate type. Currently choosen so it can be 
+		//* mapped to an exit status to show if the program failed or succeeded
+		auto proto = std::make_unique<PrototypeAST>(
+			LocalType::type_int, "", std::vector<std::string>(),
+			std::map<std::string, LocalType>()
+		);
 		return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
 	}
 	return nullptr;
@@ -919,7 +940,6 @@ static void handle_function() {
 	fn_ptr->codegen();
 }
 
-// TODO: need to deal with the fact that function type will be after extern
 static void handle_extern() {
 	auto extern_ptr = parse_extern();
 	if (!extern_ptr) {
