@@ -1,10 +1,3 @@
-/*!
-	Plan for dealing with types:
-		- Change lexer
-		- Change parser
-		- Change codegen
-
-*/
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -26,10 +19,20 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/Transforms/Scalar/Reassociate.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #pragma warning(pop) //stop hiding warnings for *our* code
 
 
 using namespace llvm;
+// TODO: consider changing doubles to floats
 
 
 // The lexer returns tokens [0-255] if it is an unknown character, otherwise one
@@ -64,6 +67,7 @@ static void initialize_type_map() {
 	g_type_map["infint"] = LocalType::type_infint;
 }
 
+static std::string g_no_function_optimization_tag = "no_opt";
 
 
 FILE* g_file;							// .ank file that we will lex, parse, and compile to LLVM IR.
@@ -74,6 +78,7 @@ static unsigned long g_line_count = 0;	// Line counter
 bool g_seen_errors = false;				// Whether any errors were encountered while parsing tokens
 
 static std::string g_identifier_str;	// Filled in for tok_identifier
+static bool g_disable_function_optimization;
 static std::string g_number_str;		// Filled in for tok_num, stored as string to enable infinite precision
 static bool g_number_has_period; 		// Helps distinguish between floats and ints
 
@@ -83,14 +88,58 @@ static std::unique_ptr<LLVMContext> g_llvm_context;
 static std::unique_ptr<IRBuilder<>> g_builder;
 static std::unique_ptr<Module> g_module;
 static std::map<std::string, Value*> g_named_values;
+// //! Needs to be imported from another file
+// static std::unique_ptr<KaleidoscopeJIT> g_jit;
+static std::unique_ptr<FunctionPassManager> g_fpm;
+static std::unique_ptr<LoopAnalysisManager> g_lam;
+static std::unique_ptr<FunctionAnalysisManager> g_fam;
+static std::unique_ptr<CGSCCAnalysisManager> g_cgam;
+static std::unique_ptr<ModuleAnalysisManager> g_mam;
+static std::unique_ptr<PassInstrumentationCallbacks> g_pic;
+static std::unique_ptr<StandardInstrumentations> g_si;
 
 // initialize_llvm()
 //	Initializes the LLVM context, module, and builder to allow
 //	for IR generation.
 static void initialize_llvm_module() {
+	// Open a new context and module
 	g_llvm_context = std::make_unique<LLVMContext>();
 	g_module = std::make_unique<Module>("Ankh IR Module", *g_llvm_context);
+	// g_module->setDataLayout(g_jit->getDataLayout());
+
+	// Builder
 	g_builder = std::make_unique<IRBuilder<>>(*g_llvm_context);
+
+	// Optimization
+	// Pass and analysis managers
+	g_fpm = std::make_unique<FunctionPassManager>();
+	g_lam = std::make_unique<LoopAnalysisManager>();
+	g_fam = std::make_unique<FunctionAnalysisManager>();
+	g_cgam = std::make_unique<CGSCCAnalysisManager>();
+	g_mam = std::make_unique<ModuleAnalysisManager>();
+	g_pic = std::make_unique<PassInstrumentationCallbacks>();
+	g_si = std::make_unique<StandardInstrumentations>(
+		*g_llvm_context, /*DebugLogging*/ true
+	);
+	g_si->registerCallbacks(*g_pic, g_mam.get());
+
+	//TODO: check if these affect the code 
+	// Add transform passes.
+	// Do simple "peephole" optimizations and bit-twiddling optzns.
+	g_fpm->addPass(InstCombinePass());
+	// Reassociate expressions.
+	g_fpm->addPass(ReassociatePass());
+	// Eliminate Common SubExpressions.
+	g_fpm->addPass(GVNPass());
+	// Simplify the control flow graph (deleting unreachable blocks, etc).
+	//TODO: this one looks sus
+	g_fpm->addPass(SimplifyCFGPass());
+
+	// Register analysis passes used in these transform passes.
+	PassBuilder PB;
+	PB.registerModuleAnalyses(*g_mam);
+	PB.registerFunctionAnalyses(*g_fam);
+	PB.crossRegisterProxies(*g_lam, *g_fam, *g_cgam, *g_mam);
 	return;
 }
 
@@ -385,11 +434,13 @@ namespace AST {
 		for (auto f_iter = f->args().begin(); f_iter != f->args().end(); ++f_iter) {
 			//f and proto have the same number of args; check if they also have the same names
 			// TODO: need to edit this to check types too
+			// printf("f_iter->getType(): %s \n", f_iter->getType());
 			if (f_iter->getName().str() != proto->get_arg_by_idx(proto_iter)) {
 				return (Function*)log_compiler_error("Signature does not match forward definition");
 			}
 			++proto_iter;
 		}
+		// Argument::
 		
 		// Create a new basic block to start insertion into.
 		BasicBlock* bb = BasicBlock::Create(*g_llvm_context, "entry", f);
@@ -406,6 +457,12 @@ namespace AST {
 
 			// Validate the generated code, checking for consistency.
 			verifyFunction(*f);
+
+			//TODO: add optionality
+			// Optimize the function if necessary
+			if (!g_disable_function_optimization) {
+				g_fpm->run(*f, *g_fam);
+			}
 
 			return f;
 		}
@@ -814,6 +871,21 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 	}
 }
 
+// handle_function_optimization
+//	Checks if the current identifier string is a string for turning off 
+//  optimization and if so triggers the appropriate flag. Returns a boolean
+//	indicating whether the current token is an optimization token.
+bool handle_function_optimization() {
+	if (g_identifier_str == g_no_function_optimization_tag) {
+		g_disable_function_optimization = true;
+		return true;
+	}
+	else {
+		g_disable_function_optimization = false;
+		return false;
+	}
+}
+
 // parse_prototype
 //	Parse a function prototype, i.e. its name and arguments
 // TODO: Should be edited to reflect the type of the prototype
@@ -835,6 +907,9 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 
 	// Parsing the identifier of the function
 	get_next_tok();
+	if (handle_function_optimization()) {
+		get_next_tok();
+	}
 	std::string fn_name = g_identifier_str;
 
 	get_next_tok();
