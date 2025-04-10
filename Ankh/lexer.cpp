@@ -103,6 +103,7 @@ static std::unique_ptr<StandardInstrumentations> g_si;
 //	for IR generation.
 static void initialize_llvm_module() {
 	// Open a new context and module
+	std::cerr << "\nInitializing LLVM\n" << std::endl;
 	g_llvm_context = std::make_unique<LLVMContext>();
 	g_module = std::make_unique<Module>("Ankh IR Module", *g_llvm_context);
 	// g_module->setDataLayout(g_jit->getDataLayout());
@@ -258,6 +259,10 @@ namespace AST {
 			: ExprAST(type), op(op), lhs(std::move(lhs)), rhs(std::move(rhs)) {
 		}
 		Value* _less_than_operator_expr(std::unique_ptr<ExprAST> lhs, std::unique_ptr<ExprAST> rhs);
+		Value* codegen_add(Value* L, Value* R, LocalType type);
+		Value* codegen_sub(Value* L, Value* R, LocalType type);
+		Value* codegen_mul(Value* L, Value* R, LocalType type);
+		Value* codegen_div(Value* L, Value* R, LocalType type);
 		Value* codegen() override;
 	}; 
 
@@ -291,9 +296,71 @@ namespace AST {
 		}
 		return log_compiler_error("Comparision between types is unhandled");
 	}
+
+
+	// Generates an LLVM addition operation between two operators
+	// with type `type`
+	Value* BinaryExprAST::codegen_add(Value* L, Value* R, LocalType type) {
+		switch (type) {
+		case type_int:
+			return g_builder->CreateAdd(L, R, "addtmp");
+		case type_double:
+			return g_builder->CreateFAdd(L, R, "addtmp");
+		default:
+			return log_compiler_error("Addition is not defined for this type");
+		}
+	}
+
+	// Generates an LLVM addition operation between two operators
+	// with type `type`
+	Value* BinaryExprAST::codegen_sub(Value* L, Value* R, LocalType type) {
+		switch (type) {
+		case type_int:
+			return g_builder->CreateSub(L, R, "subtmp");
+		case type_double:
+			return g_builder->CreateFSub(L, R, "subtmp");
+		default:
+			return log_compiler_error("Subtraction is not defined for this type");
+		}
+	}
+
+	// Generates an LLVM addition operation between two operators
+	// with type `type`
+	Value* BinaryExprAST::codegen_mul(Value* L, Value* R, LocalType type) {
+		switch (type) {
+		case type_int:
+			return g_builder->CreateMul(L, R, "multmp");
+		case type_double:
+			return g_builder->CreateFMul(L, R, "multmp");
+		default:
+			return log_compiler_error("Multiplication is not defined for this type");
+		}
+	}
+
+	// Generates an LLVM addition operation between two operators
+	// with type `type`
+	Value* BinaryExprAST::codegen_div(Value* L, Value* R, LocalType type) {
+		switch (type) {
+		case type_double:
+			return g_builder->CreateFDiv(L, R, "divtmp");
+		default:
+			return log_compiler_error("Division is not defined for this type");
+		}
+	}
+
 	
 	Value* BinaryExprAST::codegen() {
 		//L and R **MUST** have the same type OR we must do type conversions
+		LocalType type_lhs = lhs->get_type();
+		LocalType type_rhs = rhs->get_type();
+
+		//currently we do not support operations on different types
+		if (type_lhs != type_rhs) {
+			log_compiler_error("Inconsistent types: ");
+			fprintf(stderr, "LHS: %i, RHS: %i\n", type_lhs, type_rhs);
+			return nullptr;
+		}
+		
 		Value* L = lhs->codegen();
 		Value* R = rhs->codegen();
 		if (!L || !R) {
@@ -302,13 +369,13 @@ namespace AST {
 
 		switch (op) {
 		case '+':
-			return g_builder->CreateFAdd(L, R, "addtmp"); //can omit the "addtmp" arg in all cases...
+			return codegen_add(L, R, type_lhs);
 		case '-':
-			return g_builder->CreateFSub(L, R, "subtmp");
+			return codegen_sub(L, R, type_lhs);
 		case '*':
-			return g_builder->CreateFMul(L, R, "multmp");
+			return codegen_mul(L, R, type_lhs);
 		case '/':
-			return g_builder->CreateFDiv(L, R, "multmp");
+			return codegen_div(L, R, type_lhs);
 		case '<':
 			return this->_less_than_operator_expr(std::move(lhs), std::move(rhs));
 		case '>':
@@ -1099,13 +1166,6 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	//test lexer
-	//int x = get_tok();
-	//while (x != tok_eof) {
-	//	std::cout << x << ", " << g_identifier_str << ", " << g_number_str << ", " << std::endl;
-	//	x = get_tok();
-	//}
-
 	
 	//initialize by setting up the LLVM IR tools and getting the first token
 	initialize_llvm_module();
@@ -1118,6 +1178,9 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "\nParsing failed due to listed errors.\n\n");
 		return 1;
 	}
+
+
+	std::cerr << "\nFile parsed successfully.\n" << std::endl;
 
 	//parsing was successful, print generated code
 	g_module->print(errs(), nullptr);
