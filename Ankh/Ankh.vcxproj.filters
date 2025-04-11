@@ -24,5 +24,6 @@
     <None Include="test2.ank" />
     <None Include="test3.ank" />
     <None Include="test_ops.ank" />
+    <None Include="test_blocks.ank" />
   </ItemGroup>
 </Project>
