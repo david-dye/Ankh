@@ -24,3 +24,5 @@ double no_opt bar(int x, double y) {
 {
 	foo(42) + bar(7, 6.3);
 }
+
+

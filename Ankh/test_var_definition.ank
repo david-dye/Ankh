@@ -1,19 +1,13 @@
 
-
-
 //this is a comment
 
 //how to define a function
 int foo() {
 
-	//secret type modifier
-	secret int x;
-	int y = 7;
+	int x;
 
-	//equivalent to:
-	public int z = 7;
+	int z = 7;
 
-	return 0;
 }
 
 

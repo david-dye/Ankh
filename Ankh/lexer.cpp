@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <vector>
 #include <map>
+#include <cstdarg>
 
 #pragma warning(push, 0) //these headers have a million warnings (sloppily written?)
 #include "llvm/ADT/APFloat.h"
@@ -30,12 +31,29 @@
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #pragma warning(pop) //stop hiding warnings for *our* code
 
+#define DEBUG
+
+#ifdef DEBUG
+void debug_log(const char* format, ...) {
+	va_list args;
+	va_start(args, format);
+	vprintf(format, args);
+	va_end(args);
+}
+#endif
+
+#ifndef DEBUG
+void debug_log(const char* format, ...) {
+	(void) format;
+}
+#endif
+
+
 #ifndef isascii
 static unsigned int isascii(unsigned int ch) {
 	return (ch < 128);
 }
 #endif
-
 
 uint8_t constexpr SECURITY_MIN = 0;
 uint8_t constexpr SECURITY_MAX = UINT8_MAX;
@@ -116,8 +134,6 @@ static std::unique_ptr<LLVMContext> g_llvm_context;
 static std::unique_ptr<IRBuilder<>> g_builder;
 static std::unique_ptr<Module> g_module;
 static std::map<std::string, Value*> g_named_values;
-// //! Needs to be imported from another file
-// static std::unique_ptr<KaleidoscopeJIT> g_jit;
 static std::unique_ptr<FunctionPassManager> g_fpm;
 static std::unique_ptr<LoopAnalysisManager> g_lam;
 static std::unique_ptr<FunctionAnalysisManager> g_fam;
@@ -152,7 +168,6 @@ static void initialize_llvm_module() {
 	);
 	g_si->registerCallbacks(*g_pic, g_mam.get());
 
-	//TODO: check if these affect the code 
 	// Add transform passes.
 	// Do simple "peephole" optimizations and bit-twiddling optzns.
 	g_fpm->addPass(InstCombinePass());
@@ -161,7 +176,6 @@ static void initialize_llvm_module() {
 	// Eliminate Common SubExpressions.
 	g_fpm->addPass(GVNPass());
 	// Simplify the control flow graph (deleting unreachable blocks, etc).
-	//TODO: this one looks sus
 	g_fpm->addPass(SimplifyCFGPass());
 
 	// Register analysis passes used in these transform passes.
@@ -317,6 +331,7 @@ namespace AST {
 			//add new variable to the global names map at the current scope
 			NameKeywords nk;
 			nk.is_fun = false;
+			// g_scope is the current scope the code is in
 			nk.scope = g_scope;
 			nk.security = security_level;
 			nk.type = type;
@@ -329,8 +344,9 @@ namespace AST {
 		//assumes the variable has already been emitted somewhere and its value is available.
 		Value* V = g_named_values[name];
 
-		if (!V)
+		if (!V) {
 			log_compiler_error("Unknown variable name");
+		}
 		return V;
 	}
 
@@ -669,7 +685,6 @@ namespace AST {
 			// Validate the generated code, checking for consistency.
 			verifyFunction(*f);
 
-			//TODO: add optionality
 			// Optimize the function if necessary
 			if (!g_disable_function_optimization) {
 				g_fpm->run(*f, *g_fam);
@@ -698,7 +713,7 @@ namespace AST {
 	};
 
 	Value* BlockExprAST::codegen() {
-		//need to add the ability to return early from a block
+		//TODO: need to add the ability to return early from a block
 		Value* last = nullptr;
 		for (auto& expr : body)
 			last = expr->codegen();
@@ -767,10 +782,12 @@ static std::string get_next_identifier(int n = 1) {
 	//generates the next keyword, starting by ignoring whitespace
 	int i = 0;
 	std::string identifier_str; //the next identifier, starting with current_char
+	//! If this loop faces an unexpected character (e.g., '('), it returns that 
+	//! character.
 	for (int j = 0; j < n; ++j) {
 		char current_char = g_line[g_line_idx];
 		while (current_char == ' ' || current_char == '\t' || current_char == '\r') {
-			// Eat all alphanumeric characters
+			// Eat all whitespace
 			++i;
 			current_char = g_line[g_line_idx + i];
 		}
@@ -840,6 +857,22 @@ static int get_tok() {
 		return get_tok();
 	}
 
+	if (g_line[g_line_idx] == '/') {
+		//either a comment or a division
+
+		if (g_line.size() > g_line_idx + 1 && g_line[g_line_idx + 1] == '/') {
+			//comment, ignore rest of line
+			read_line();
+			return get_tok();
+		}
+
+		//division operator
+		++g_line_idx;
+		//! Interesting. so if we have a line with just / we will consider it a
+		//! division operator. This kinda makes sense.
+		return '/';
+	}
+
 	if (isalpha(g_line[g_line_idx]) || g_line[g_line_idx] == '_') {
 		//token starts with a letter or an underscore
 		g_identifier_str = g_line[g_line_idx]; 
@@ -880,6 +913,8 @@ static int get_tok() {
 			}
 		}
 
+		//! For some reason, having secret in front of int made the parser treat
+		//! int as an identifier.
 		// not a keyword, indicate that g_identifier_str is filled
 		return tok_identifier;
 	}
@@ -915,22 +950,6 @@ static int get_tok() {
 		return tok_num;
 	}
 
-	if (g_line[g_line_idx] == '/') {
-		//either a comment or a division
-
-		if (g_line.size() > g_line_idx + 1 && g_line[g_line_idx + 1] == '/') {
-			//comment, ignore rest of line
-			read_line();
-			return get_tok();
-		}
-
-		//division operator
-		++g_line_idx;
-		//! Interesting. so if we have a line with just / we will consider it a
-		//! division operator. This kinda makes sense.
-		return '/';
-	}
-
 	//special or unknown character, such as a binary operator or paretheses
 	++g_line_idx;
 	return g_line[g_line_idx - 1];
@@ -954,6 +973,10 @@ static int get_next_tok() {
 	g_prev_tok = g_cur_tok;
 	g_prev_identifier_str = g_identifier_str;
 	g_cur_tok = get_tok();
+	debug_log(
+		"`geh_next_tok`. g_cur_tok: %i,\n \t\tg_identifier_str: %s\n",
+		g_cur_tok, g_identifier_str.c_str()
+	);
 	return g_cur_tok;
 }
 
@@ -1020,11 +1043,14 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 
 	std::string id_name = g_identifier_str; // Set by lexer
 	LocalType type = g_type;
+	//! To deal with this we need to make the lexer parse security levels
 	uint8_t security_level = 69; //TODO security levels
 
 	get_next_tok();  //eat identifier.
 	
 
+	//! todeal with the current thing, make sure we don't test with = sign.
+	//! the current problem is that the identifier is there ("secret") and then
 	if (g_cur_tok != '(') {
 		// The identifier is a variable name. If it is not already defined, then its type is g_type
 		bool new_var = true; //whether the identifier is new or already defined
@@ -1125,6 +1151,7 @@ static std::unique_ptr<ExprAST> parse_primary() {
 	case '{':
 		return parse_scoped_block();
 	default:
+
 		return log_syntax_error("unknown token when expecting an expression");
 	}
 }
@@ -1428,7 +1455,7 @@ static void parse_file() {
 				get_next_tok();
 				break;
 			// For defining function
-			case tok_fun: //! was tok_def
+			case tok_fun:
 				handle_function();
 				break;
 			case tok_extern:
@@ -1447,6 +1474,7 @@ static void parse_file() {
 
 
 int main(int argc, char** argv) {
+	debug_log("Debug log is active");
 	if (argc != 2) {
 		fprintf(stderr, "Usage: No .ank file provided to lexer.\n");
 		return 1;

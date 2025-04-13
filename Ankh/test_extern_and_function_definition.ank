@@ -1,0 +1,5 @@
+extern double cos(int x); //external declaration
+
+double foo(int x) cos(x); //function definition using declared function
+
+7 * 3 / 2; //top-level expression
