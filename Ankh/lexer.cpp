@@ -113,6 +113,7 @@ static bool g_disable_function_optimization;
 static std::string g_number_str;		// Filled in for tok_num, stored as string to enable infinite precision
 static bool g_number_has_period; 		// Helps distinguish between floats and ints
 static LocalType g_type = type_unsupported;	// Used when a variable or function is defined
+static uint8_t g_security_level = SECURITY_MIN;
 
 
 //contains everything you could possibly want to know about a name.
@@ -133,7 +134,7 @@ static uint8_t g_scope = 0; //the current operating scope. 0 is global
 static std::unique_ptr<LLVMContext> g_llvm_context;
 static std::unique_ptr<IRBuilder<>> g_builder;
 static std::unique_ptr<Module> g_module;
-static std::map<std::string, Value*> g_named_values;
+static std::map<std::string, AllocaInst*> g_named_values;
 static std::unique_ptr<FunctionPassManager> g_fpm;
 static std::unique_ptr<LoopAnalysisManager> g_lam;
 static std::unique_ptr<FunctionAnalysisManager> g_fam;
@@ -240,6 +241,7 @@ static bool is_named(std::string& name) {
 //======================================================================================================
 // Abstract Syntax Tree (AST)
 //======================================================================================================
+
 namespace AST {
 	static Type* local_type_to_llvm(LocalType type) {
 		switch (type) {
@@ -259,6 +261,19 @@ namespace AST {
 				break;
 		}
 	}
+
+	/// create_entry_block_alloca - Create an alloca instruction in the entry block of
+	/// the function.  This is used for mutable variables etc.
+	static AllocaInst* create_entry_block_alloca(
+		Function* f, StringRef var_name, LocalType type
+	) {
+		IRBuilder<> temp_builder(
+				&f->getEntryBlock(), f->getEntryBlock().begin()
+		);
+		Type* llvm_type = local_type_to_llvm(type);
+		return temp_builder.CreateAlloca(llvm_type, nullptr, var_name);
+	}
+
 	// ExprAST - Base class for all expression nodes.
 	class ExprAST {
 		LocalType type;
@@ -342,12 +357,14 @@ namespace AST {
 
 	Value* VariableExprAST::codegen() {
 		//assumes the variable has already been emitted somewhere and its value is available.
-		Value* V = g_named_values[name];
+		// Value* V = g_named_values[name];
+		AllocaInst* alloca = g_named_values[name];
 
-		if (!V) {
+		if (!alloca) {
 			log_compiler_error("Unknown variable name");
 		}
-		return V;
+		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
+		return loaded_value;
 	}
 
 	// BinaryExprAST - Expression class for a binary operator.
@@ -974,7 +991,7 @@ static int get_next_tok() {
 	g_prev_identifier_str = g_identifier_str;
 	g_cur_tok = get_tok();
 	debug_log(
-		"`geh_next_tok`. g_cur_tok: %i,\n \t\tg_identifier_str: %s\n",
+		"`get_next_tok`. g_cur_tok: %i,\n \t\tg_identifier_str: %s\n",
 		g_cur_tok, g_identifier_str.c_str()
 	);
 	return g_cur_tok;
