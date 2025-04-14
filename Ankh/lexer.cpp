@@ -35,7 +35,7 @@
 //TODO: When implementing control flow, make sure to use code form chapter 7
 //TODO: this includes ForExprAST::codegen()
 
-// #define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
 void debug_log(const char* format, ...) {
@@ -44,6 +44,7 @@ void debug_log(const char* format, ...) {
 	vprintf(format, args);
 	va_end(args);
 }
+
 #endif
 
 #ifndef DEBUG
@@ -132,6 +133,13 @@ struct NameKeywords {
 static std::map<std::string, NameKeywords> g_var_names; //variable names and info
 static std::map<std::string, NameKeywords> g_fun_names; //function names and info
 static uint8_t g_scope = 0; //the current operating scope. 0 is global
+
+void print_map_keys(std::map<std::string, NameKeywords> mp) {
+	printf("printing map: \n");
+	for (auto it = mp.begin(); it != mp.end(); ++it) {
+		printf("\tit->first: %s\n", it->first.c_str());
+	}
+}
 
 
 //global variables for creating LLVM bytecode
@@ -1403,6 +1411,10 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 		nk.security = 69; //TODO security
 		arg_types[g_identifier_str] = nk;
 
+		// Adding to `g_var_names`
+		NameKeywords nk_copy = nk;
+		g_var_names[g_identifier_str] = nk_copy;
+
 		int next_tok = get_next_tok();
 		if (next_tok == ')') {
 			break;
@@ -1436,7 +1448,9 @@ static std::unique_ptr<FunctionAST> parse_function() {
 	}
 
 	std::unique_ptr<AST::ExprAST> expr = parse_expression();
-	flush_vars(); //remove locally defined (scoped) variables from the global variable list
+
+	// This was moved because we want this to happen after the code generation
+	// flush_vars(); //remove locally defined (scoped) variables from the global variable list
 
 	if (!expr) {
 		return nullptr;
@@ -1447,7 +1461,11 @@ static std::unique_ptr<FunctionAST> parse_function() {
 		return nullptr;
 	}
 
-	return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
+	std::unique_ptr<FunctionAST> fun_code = std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
+
+	flush_vars();
+
+	return fun_code
 }
 
 // parse_extern()
