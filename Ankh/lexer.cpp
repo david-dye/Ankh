@@ -29,7 +29,11 @@
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 #pragma warning(pop) //stop hiding warnings for *our* code
+
+//TODO: When implementing control flow, make sure to use code form chapter 7
+//TODO: this includes ForExprAST::codegen()
 
 #define DEBUG
 
@@ -170,6 +174,8 @@ static void initialize_llvm_module() {
 	g_si->registerCallbacks(*g_pic, g_mam.get());
 
 	// Add transform passes.
+	// promote allocas to registers 
+	g_fpm->addPass(PromotePass());
 	// Do simple "peephole" optimizations and bit-twiddling optzns.
 	g_fpm->addPass(InstCombinePass());
 	// Reassociate expressions.
@@ -265,13 +271,12 @@ namespace AST {
 	/// create_entry_block_alloca - Create an alloca instruction in the entry block of
 	/// the function.  This is used for mutable variables etc.
 	static AllocaInst* create_entry_block_alloca(
-		Function* f, StringRef var_name, LocalType type
+		Function* f, StringRef var_name, Type* type
 	) {
 		IRBuilder<> temp_builder(
 				&f->getEntryBlock(), f->getEntryBlock().begin()
 		);
-		Type* llvm_type = local_type_to_llvm(type);
-		return temp_builder.CreateAlloca(llvm_type, nullptr, var_name);
+		return temp_builder.CreateAlloca(type, nullptr, var_name);
 	}
 
 	// ExprAST - Base class for all expression nodes.
@@ -353,6 +358,9 @@ namespace AST {
 			g_var_names[name] = nk;
 		}
 		Value* codegen() override;
+		std::string get_name() {
+			return name;
+		}
 	};
 
 	Value* VariableExprAST::codegen() {
@@ -382,6 +390,7 @@ namespace AST {
 		Value* codegen_sub(Value* L, Value* R, LocalType type);
 		Value* codegen_mul(Value* L, Value* R, LocalType type);
 		Value* codegen_div(Value* L, Value* R, LocalType type);
+		Value* codegen_assign();
 		Value* codegen() override;
 	}; 
 
@@ -462,8 +471,36 @@ namespace AST {
 		}
 	}
 
+	Value* BinaryExprAST::codegen_assign() {
+		//TODO: assert same type as local store
+		VariableExprAST* lhse = static_cast<VariableExprAST*>(lhs.get());
+		if (!lhse) {
+			return log_compiler_error(
+				"destination of '=' must be a variable"
+			);
+		}
+
+		Value* val = rhs->codegen();
+		if (!val) {
+			return nullptr;
+		}
+
+		Value* variable = g_named_values[lhse->get_name()];
+		if (!variable) {
+			return log_compiler_error("assignment for undefined variable");
+		}
+
+		g_builder->CreateStore(val, variable);
+		return val;
+	}
+
 	
 	Value* BinaryExprAST::codegen() {
+		// Deal with assignment as a special case since we don't want to emit
+		// LHS as an expression.
+		if (op == '=') {
+			return codegen_assign();
+		}
 		//L and R **MUST** have the same type OR we must do type conversions
 		LocalType type_lhs = lhs->get_type();
 		LocalType type_rhs = rhs->get_type();
@@ -692,8 +729,12 @@ namespace AST {
 
 		// Record the function arguments in the g_named_values map.
 		g_named_values.clear();
-		for (auto& arg : f->args())
-			g_named_values[std::string(arg.getName())] = &arg;
+		for (auto& arg : f->args()) {
+			//TODO: ensure that the type here works well (is it correct type?)
+			AllocaInst* alloca = create_entry_block_alloca(f, arg.getName(), arg.getType());
+			g_builder->CreateStore(&arg, alloca);
+			g_named_values[std::string(arg.getName())] = alloca;
+		}
 		
 		if (Value* retval = body->codegen()) {
 			// Finish off the function.
@@ -1181,6 +1222,7 @@ static std::map<char, int> binop_precedence;
 //	Sets the precedence of all binary operators, such as +, -, *, and /.
 static void set_binop_precedence() {
 	//higher precedence is performed first
+	binop_precedence['='] = 2;
 	binop_precedence['<'] = 10;
 	binop_precedence['>'] = 10;
 	binop_precedence['+'] = 20;
