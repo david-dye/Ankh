@@ -1,4 +1,1 @@
-int foo(int x) {
-    x;
-    x = 10;
-}
+int foo(int x)  x = 10;

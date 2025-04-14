@@ -35,7 +35,7 @@
 //TODO: When implementing control flow, make sure to use code form chapter 7
 //TODO: this includes ForExprAST::codegen()
 
-#define DEBUG
+// #define DEBUG
 
 #ifdef DEBUG
 void debug_log(const char* format, ...) {
