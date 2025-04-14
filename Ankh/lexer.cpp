@@ -490,6 +490,24 @@ namespace AST {
 			return log_compiler_error("assignment for undefined variable");
 		}
 
+		// ensure the variable is in local store
+		if (g_var_names.find(lhse->get_name()) == g_var_names.end()) {
+			return log_compiler_error(
+				"variable found in `g_named_values` but not in `g_var_names`"
+			);
+		}
+
+		NameKeywords nk = g_var_names[lhse->get_name()];
+
+		LocalType type_rhs = rhs->get_type();
+
+		if (nk.type != type_rhs) {
+			return log_compiler_error(
+				"assigned value type is different from variable type"
+			);
+		}
+
+
 		g_builder->CreateStore(val, variable);
 		return val;
 	}
