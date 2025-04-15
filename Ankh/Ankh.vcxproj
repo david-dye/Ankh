@@ -22,11 +22,14 @@
     <ClCompile Include="lexer.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="get_max.ank" />
     <None Include="test1.ank" />
     <None Include="test2.ank" />
     <None Include="test3.ank" />
     <None Include="test_blocks.ank" />
+    <None Include="test_if.ank" />
     <None Include="test_ops.ank" />
+    <None Include="test_scope.ank" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>

@@ -1,0 +1,9 @@
+
+double funk (
+	int x,
+	double y
+) {
+	x + y;
+}
+
+funk(6, 3);

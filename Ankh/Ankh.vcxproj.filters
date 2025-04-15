@@ -25,5 +25,8 @@
     <None Include="test3.ank" />
     <None Include="test_ops.ank" />
     <None Include="test_blocks.ank" />
+    <None Include="test_scope.ank" />
+    <None Include="test_if.ank" />
+    <None Include="get_max.ank" />
   </ItemGroup>
 </Project>

@@ -59,6 +59,11 @@ enum Token {
 	// primary
 	tok_identifier = -5,
 	tok_num = -6,
+
+	// control flow
+	tok_if = -7,
+	tok_else = -8, //we don't use the tok_then that kaleidoscope uses, because... that's stupid
+
 };
 
 enum LocalType {
@@ -125,6 +130,8 @@ static std::unique_ptr<CGSCCAnalysisManager> g_cgam;
 static std::unique_ptr<ModuleAnalysisManager> g_mam;
 static std::unique_ptr<PassInstrumentationCallbacks> g_pic;
 static std::unique_ptr<StandardInstrumentations> g_si;
+
+static Value* get_default_type_value(Type* type);
 
 // initialize_llvm()
 //	Initializes the LLVM context, module, and builder to allow
@@ -227,6 +234,7 @@ static bool is_named(std::string& name) {
 // Abstract Syntax Tree (AST)
 //======================================================================================================
 namespace AST {
+
 	static Type* local_type_to_llvm(LocalType type) {
 		switch (type) {
 			case LocalType::type_int:
@@ -325,13 +333,128 @@ namespace AST {
 		Value* codegen() override;
 	};
 
+
 	Value* VariableExprAST::codegen() {
 		//assumes the variable has already been emitted somewhere and its value is available.
 		Value* V = g_named_values[name];
 
-		if (!V)
+
+		if (!V) {
 			log_compiler_error("Unknown variable name");
+		}
 		return V;
+	}
+
+	class IfExprAST : public ExprAST {
+		std::unique_ptr<ExprAST> cond_expr, then_expr, else_expr;
+
+	public:
+		IfExprAST (
+			std::unique_ptr<ExprAST> cond_expr, 
+			std::unique_ptr<ExprAST> then_expr,
+			std::unique_ptr<ExprAST> else_expr
+		) : 
+			ExprAST(then_expr->get_type()), 
+			cond_expr(std::move(cond_expr)), 
+			then_expr(std::move(then_expr)), 
+			else_expr(std::move(else_expr)) 
+		{
+			if (this->else_expr && this->else_expr->get_type() != this->then_expr->get_type()) {
+				//If there is an "else" expression and it has a different type than the "then" expression
+				//You can think of an if statement in Ankh as being like a ternary operator.
+				//An if expression without an else expression creates a default else expression that always returns 0.
+				log_compiler_error("Both branches of the if expression must have the same return type.");
+			}
+		}
+
+		Value* codegen() override;
+	};
+
+	Value* IfExprAST::codegen() {
+		Value* cond_v = cond_expr->codegen();
+		if (!cond_v) {
+			return nullptr;
+		}
+
+		// Convert condition to a bool by comparing non-equal to 0.
+		if (cond_v->getType()->isIntegerTy()) {
+			// Integer comparison: cond_v != 0
+			cond_v = g_builder->CreateICmpNE(
+				cond_v,
+				ConstantInt::get(cond_v->getType(), 0),
+				"ifcond"
+			);
+		}
+		else if (cond_v->getType()->isFloatingPointTy()) {
+			// Floating point comparison: CondV != 0.0
+			cond_v = g_builder->CreateFCmpONE(
+				cond_v,
+				ConstantFP::get(*g_llvm_context, APFloat(0.0)),
+				"ifcond"
+			);
+		}
+		else {
+			log_compiler_error("Unknown condition value type");
+		}
+
+		Function* fun = g_builder->GetInsertBlock()->getParent();
+
+		// Create blocks for the then and else cases.  Insert the 'then' block at the
+		// end of the function.
+		BasicBlock* then_bb = BasicBlock::Create(*g_llvm_context, "then", fun);
+		BasicBlock* else_bb = BasicBlock::Create(*g_llvm_context, "else");
+		BasicBlock* merge_bb = BasicBlock::Create(*g_llvm_context, "ifcont");
+
+		g_builder->CreateCondBr(cond_v, then_bb, else_bb);
+		
+		// Emit then value.
+		g_builder->SetInsertPoint(then_bb);
+
+		Value* then_v = then_expr->codegen();
+		if (!then_v) {
+			//should be impossible to reach...
+			return nullptr;
+		}
+
+		g_builder->CreateBr(merge_bb);
+		// Codegen of 'Then' can change the current block, update ThenBB for the PHI.
+		then_bb = g_builder->GetInsertBlock();
+
+		// Emit else block.
+		fun->insert(fun->end(), else_bb);
+		g_builder->SetInsertPoint(else_bb);
+
+		Value* else_v;
+		if (else_expr) {
+			else_v = else_expr->codegen();
+		}
+		else {
+			//THIS IS THE DEFAULT VALUE OF AN ELSE BLOCK
+			else_v = get_default_type_value(then_v->getType());
+		}
+		
+		if (!else_v) {
+			//should be impossible to reach...
+			return nullptr;
+		}
+
+		if (then_v->getType() != else_v->getType()) {
+			return log_compiler_error("During codegen, the types of the then and else expressions became different.");
+		}
+
+		g_builder->CreateBr(merge_bb);
+		// codegen of 'else' can change the current block, update else_bb for the PHI.
+		else_bb = g_builder->GetInsertBlock();
+
+		// emit merge block.
+		fun->insert(fun->end(), merge_bb);
+		g_builder->SetInsertPoint(merge_bb);
+
+		PHINode* PN = g_builder->CreatePHI(then_v->getType(), 2, "iftmp");
+		PN->addIncoming(then_v, then_bb);
+		PN->addIncoming(else_v, else_bb);
+
+		return PN;
 	}
 
 	// BinaryExprAST - Expression class for a binary operator.
@@ -724,6 +847,19 @@ std::unique_ptr<PrototypeAST> log_syntax_error_p(const char* str) {
 	return nullptr;
 }
 
+// get_default_type_value(type)
+//	Gets the default type for all supported types. Generally this is 0.
+static Value* get_default_type_value(Type* type) {
+	if (type->isIntegerTy()) {
+		return ConstantInt::get(type, 0);
+	}
+	else if (type->isFloatingPointTy()) {
+		return ConstantFP::get(type, 0.0);
+	}
+	log_compiler_error("Unsupported type for default else value");
+	return nullptr;
+}
+
 
 //======================================================================================================
 // Lexer
@@ -856,6 +992,10 @@ static int get_tok() {
 
 		if (g_identifier_str == "extern")
 			return tok_extern;
+		if (g_identifier_str == "if")
+			return tok_if;
+		if (g_identifier_str == "else")
+			return tok_else;
 
 		for (auto type:g_type_map) {
 			if (g_identifier_str == type.first) {
@@ -1106,6 +1246,44 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 	return std::make_unique<BlockExprAST>(exprs.back()->get_type(), std::move(exprs));
 }
 
+// parse_conditional_expr()
+//	Parses an if statement, in the form: conditional expr ::= if condition {} else {}
+static std::unique_ptr<ExprAST> parse_conditional_expr() {
+	get_next_tok();  // eat the if.
+
+	// condition.
+	auto cond_expr = parse_expression();
+	if (!cond_expr)
+		return log_syntax_error("No condition was provided to the if expression.");
+
+	if (g_cur_tok != '{')
+		return log_syntax_error("Expected scoped block ('{') following condition expression.");
+	 
+	auto then_expr = parse_scoped_block();
+	if (!then_expr)
+		return log_syntax_error("Expected non-empty scoped block ('{') following condition expression.");
+
+	std::unique_ptr<ExprAST> else_expr;
+	if (g_cur_tok == tok_else) {
+		//there is an else command to run
+		get_next_tok(); //eat the else
+
+		if (g_cur_tok != '{')
+			return log_syntax_error("Expected scoped block ('{') following else expression.");
+
+		else_expr = parse_scoped_block();
+		if (!else_expr)
+			return log_syntax_error("Expected non-empty scoped block ('{') following else expression.");
+	} 
+	else {
+		//there is no else command to run
+		else_expr = nullptr;
+	}
+
+	return std::make_unique<IfExprAST>(std::move(cond_expr), std::move(then_expr),
+		std::move(else_expr));
+}
+
 // parse_primary()
 //	Determines the type of expression to parse and calls the appropriate handler
 static std::unique_ptr<ExprAST> parse_primary() {
@@ -1113,6 +1291,7 @@ static std::unique_ptr<ExprAST> parse_primary() {
 	//   ::= identifierexpr
 	//   ::= numberexpr
 	//   ::= parenexpr
+	std::cout << g_cur_tok << std::endl;
 	switch (g_cur_tok) {
 	case tok_identifier:
 		return parse_identifier_expr();
@@ -1124,6 +1303,8 @@ static std::unique_ptr<ExprAST> parse_primary() {
 	//	return parse_var_expr(); //function undefined currently. Should handle variable declaration
 	case '{':
 		return parse_scoped_block();
+	case tok_if:
+		return parse_conditional_expr();
 	default:
 		return log_syntax_error("unknown token when expecting an expression");
 	}
