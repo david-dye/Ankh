@@ -134,6 +134,11 @@ static std::map<std::string, NameKeywords> g_var_names; //variable names and inf
 static std::map<std::string, NameKeywords> g_fun_names; //function names and info
 static uint8_t g_scope = 0; //the current operating scope. 0 is global
 
+struct AllocaProperties {
+	AllocaInst* alloca;
+	uint8_t scope = 0; //default is global scope
+};
+
 void print_map_keys(std::map<std::string, NameKeywords> mp) {
 	printf("printing map: \n");
 	for (auto it = mp.begin(); it != mp.end(); ++it) {
@@ -141,12 +146,18 @@ void print_map_keys(std::map<std::string, NameKeywords> mp) {
 	}
 }
 
+void print_map_keys(std::map<std::string, AllocaProperties> mp) {
+	printf("printing map: \n");
+	for (auto it = mp.begin(); it != mp.end(); ++it) {
+		printf("\tit->first: %s\n", it->first.c_str());
+	}
+}
 
 //global variables for creating LLVM bytecode
 static std::unique_ptr<LLVMContext> g_llvm_context;
 static std::unique_ptr<IRBuilder<>> g_builder;
 static std::unique_ptr<Module> g_module;
-static std::map<std::string, AllocaInst*> g_named_values;
+static std::map<std::string, AllocaProperties> g_named_values;
 static std::unique_ptr<FunctionPassManager> g_fpm;
 static std::unique_ptr<LoopAnalysisManager> g_lam;
 static std::unique_ptr<FunctionAnalysisManager> g_fam;
@@ -221,6 +232,18 @@ static void flush_vars() {
 		//std::cout << "Flushing: " << it->first << "\tScope: " << static_cast<int>(it->second.scope) << std::endl;
 		if (it->second.scope > g_scope) {
 			it = g_var_names.erase(it);
+		}
+		else {
+			++it;
+		}
+	}
+}
+
+// Removes variables from `g_named_values` with scope higher than `cur_scope`.
+static void flush_named_values_map(uint8_t cur_scope) {
+	for (auto it = g_named_values.begin(); it != g_named_values.end(); ) {
+		if (it->second.scope > g_scope) {
+			it = g_named_values.erase(it);
 		}
 		else {
 			++it;
@@ -347,6 +370,7 @@ namespace AST {
 	class VariableExprAST : public ExprAST {
 		std::string name;
 		uint8_t security_level;
+		uint8_t scope;
 
 	public:
 		VariableExprAST(const LocalType type, const std::string& name, const uint8_t security_level, bool new_var) 
@@ -364,6 +388,8 @@ namespace AST {
 			nk.security = security_level;
 			nk.type = type;
 			g_var_names[name] = nk;
+
+			scope = g_scope;
 		}
 		Value* codegen() override;
 		std::string get_name() {
@@ -374,8 +400,7 @@ namespace AST {
 	Value* VariableExprAST::codegen() {
 		debug_log("\n\nin normal codegen\n\n\n");
 		//assumes the variable has already been emitted somewhere and its value is available.
-		// Value* V = g_named_values[name];
-		AllocaInst* alloca = g_named_values[name];
+		AllocaInst* alloca = g_named_values[name].alloca;
 
 		if (!alloca) {
 			printf("in that if");
@@ -388,14 +413,11 @@ namespace AST {
 	class LocalVariableExprAST : public ExprAST {
 		std::string name;
 		uint8_t security_level;
+		uint8_t scope;
 
 	public:
-		LocalVariableExprAST(const LocalType type, const std::string& name, const uint8_t security_level, bool new_var) 
+		LocalVariableExprAST(const LocalType type, const std::string& name, const uint8_t security_level) 
 			: ExprAST(type), name(name), security_level(security_level) {
-			if (!new_var) {
-				//no need to do anything for a variable already defined
-				return;
-			}
 
 			//add new variable to the global names map at the current scope
 			NameKeywords nk;
@@ -405,6 +427,8 @@ namespace AST {
 			nk.security = security_level;
 			nk.type = type;
 			g_var_names[name] = nk;
+
+			scope = g_scope;
 		}
 		Value* codegen() override;
 		std::string get_name() {
@@ -420,7 +444,12 @@ namespace AST {
 		//TODO: make default val type dependent
 		Value* default_val = ConstantInt::get(*g_llvm_context, APInt(32, 0));
 		g_builder->CreateStore(default_val, alloca);
-		g_named_values[name] = alloca;
+
+		AllocaProperties alloca_prop;
+		alloca_prop.alloca = alloca;
+		alloca_prop.scope = scope;
+		g_named_values[name] = alloca_prop;
+
 		return default_val;
 	}
 
@@ -534,28 +563,30 @@ namespace AST {
 			return nullptr;
 		}
 
-		Value* variable = g_named_values[lhse->get_name()];
+		Value* variable = g_named_values[lhse->get_name()].alloca;
 		debug_log("lhse->get_name(): %s\n", lhse->get_name().c_str());
 		if (!variable) {
 			return log_compiler_error("assignment for undefined variable");
 		}
 
-		// ensure the variable is in local store
-		if (g_var_names.find(lhse->get_name()) == g_var_names.end()) {
-			return log_compiler_error(
-				"variable found in `g_named_values` but not in `g_var_names`"
-			);
-		}
+		// Removed this as `g_var_names` as the variables may be flushed at this
+		// point
+		// // ensure the variable is in local store
+		// if (g_var_names.find(lhse->get_name()) == g_var_names.end()) {
+		// 	return log_compiler_error(
+		// 		"variable found in `g_named_values` but not in `g_var_names`"
+		// 	);
+		// }
 
-		NameKeywords nk = g_var_names[lhse->get_name()];
+		// NameKeywords nk = g_var_names[lhse->get_name()];
 
-		LocalType type_rhs = rhs->get_type();
+		// LocalType type_rhs = rhs->get_type();
 
-		if (nk.type != type_rhs) {
-			return log_compiler_error(
-				"assigned value type is different from variable type"
-			);
-		}
+		// if (nk.type != type_rhs) {
+		// 	return log_compiler_error(
+		// 		"assigned value type is different from variable type"
+		// 	);
+		// }
 
 
 		g_builder->CreateStore(val, variable);
@@ -686,6 +717,7 @@ namespace AST {
 		std::vector<std::string> args; //this will likely need to contain more than just the name of arguments
 		std::map<std::string, NameKeywords> arg_types;
 		uint8_t security_level;
+		uint8_t scope;
 
 	public:
 		PrototypeAST(
@@ -714,6 +746,7 @@ namespace AST {
 			}
 
 			this->arg_types = std::move(arg_types);
+			scope = g_scope;
 		}
 
 		Function* codegen() override;
@@ -722,6 +755,8 @@ namespace AST {
 		const size_t get_nargs() const { return args.size(); }
 		const std::string& get_arg_by_idx(size_t i) const { assert(i < get_nargs()); return args[i]; }
 		const LocalType get_arg_type(std::string& arg) { return arg_types[arg].type; }
+		const uint8_t get_scope() const { return scope; }
+		const uint8_t get_security_level() const { return security_level; }
 	};
 
 	Function* PrototypeAST::codegen() {
@@ -795,13 +830,23 @@ namespace AST {
 		BasicBlock* bb = BasicBlock::Create(*g_llvm_context, "entry", f);
 		g_builder->SetInsertPoint(bb);
 
-		// Record the function arguments in the g_named_values map.
-		// g_named_values.clear();
+		// Remove out of scope variables from `g_named_values`. Out of scope is
+		// determined based on the scope the function is in (as opposed to the 
+		// scope inside the function) which is determined by the scope the 
+		// prototype is in.
+		print_map_keys(g_named_values);
+		flush_named_values_map(proto->get_scope());
+		print_map_keys(g_named_values);
 		for (auto& arg : f->args()) {
 			//TODO: ensure that the type here works well (is it correct type?)
 			AllocaInst* alloca = create_entry_block_alloca(f, arg.getName(), arg.getType());
 			g_builder->CreateStore(&arg, alloca);
-			g_named_values[std::string(arg.getName())] = alloca;
+			
+			AllocaProperties alloca_prop;
+			alloca_prop.alloca = alloca;
+			// The scope inside the function is the scope the function is in + 1
+			alloca_prop.scope = proto->get_scope() + 1;
+			g_named_values[std::string(arg.getName())] = alloca_prop;
 		}
 		
 		debug_log("just before the if\n");
@@ -845,8 +890,10 @@ namespace AST {
 	Value* BlockExprAST::codegen() {
 		//TODO: need to add the ability to return early from a block
 		Value* last = nullptr;
-		for (auto& expr : body)
+		for (auto& expr : body) {
 			last = expr->codegen();
+		}
+		flush_vars();
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
@@ -1256,10 +1303,15 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 	get_next_tok();
 	--g_scope;
 
-	flush_vars();
+	// Note: `flush_vars()` and `g_var_names` should only be used when parsing
+	// and using it in `codegen` can cause unexpected behavior
+	std::unique_ptr<BlockExprAST> block_code = std::make_unique<BlockExprAST>(
+		exprs.back()->get_type(), std::move(exprs)
+	);
 
+	flush_vars();
 	//the type of the block is the type of its return. CURRENTLY that is the final expression.
-	return std::make_unique<BlockExprAST>(exprs.back()->get_type(), std::move(exprs));
+	return block_code;
 }
 
 static std::unique_ptr<ExprAST> parse_var_expr() {
@@ -1286,7 +1338,7 @@ static std::unique_ptr<ExprAST> parse_var_expr() {
 
 	return std::make_unique<LocalVariableExprAST>(
 		//TODO: consider removing last parameter
-		g_type, var_name, security_level, true 
+		g_type, var_name, security_level
 	);
 }
 
@@ -1541,6 +1593,8 @@ static std::unique_ptr<FunctionAST> parse_function() {
 
 	std::unique_ptr<FunctionAST> fun_code = std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
 
+	// Moved inside the codegen as we want the variables to be availble 
+	// inside the codegen
 	flush_vars();
 
 	return fun_code;
