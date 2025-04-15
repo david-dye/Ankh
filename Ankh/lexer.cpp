@@ -372,15 +372,56 @@ namespace AST {
 	};
 
 	Value* VariableExprAST::codegen() {
+		debug_log("\n\nin normal codegen\n\n\n");
 		//assumes the variable has already been emitted somewhere and its value is available.
 		// Value* V = g_named_values[name];
 		AllocaInst* alloca = g_named_values[name];
 
 		if (!alloca) {
+			printf("in that if");
 			log_compiler_error("Unknown variable name");
 		}
 		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
 		return loaded_value;
+	}
+
+	class LocalVariableExprAST : public ExprAST {
+		std::string name;
+		uint8_t security_level;
+
+	public:
+		LocalVariableExprAST(const LocalType type, const std::string& name, const uint8_t security_level, bool new_var) 
+			: ExprAST(type), name(name), security_level(security_level) {
+			if (!new_var) {
+				//no need to do anything for a variable already defined
+				return;
+			}
+
+			//add new variable to the global names map at the current scope
+			NameKeywords nk;
+			nk.is_fun = false;
+			// g_scope is the current scope the code is in
+			nk.scope = g_scope;
+			nk.security = security_level;
+			nk.type = type;
+			g_var_names[name] = nk;
+		}
+		Value* codegen() override;
+		std::string get_name() {
+			return name;
+		}
+	};
+
+	Value* LocalVariableExprAST::codegen() {
+		debug_log("\n\nin local codegen. name: %s\n\n\n", name.c_str());
+		Function* fun = g_builder->GetInsertBlock()->getParent();
+		Type* llvm_type = local_type_to_llvm(get_type());
+		AllocaInst* alloca = create_entry_block_alloca(fun, name, llvm_type);
+		//TODO: make default val type dependent
+		Value* default_val = ConstantInt::get(*g_llvm_context, APInt(32, 0));
+		g_builder->CreateStore(default_val, alloca);
+		g_named_values[name] = alloca;
+		return default_val;
 	}
 
 	// BinaryExprAST - Expression class for a binary operator.
@@ -494,6 +535,7 @@ namespace AST {
 		}
 
 		Value* variable = g_named_values[lhse->get_name()];
+		debug_log("lhse->get_name(): %s\n", lhse->get_name().c_str());
 		if (!variable) {
 			return log_compiler_error("assignment for undefined variable");
 		}
@@ -754,7 +796,7 @@ namespace AST {
 		g_builder->SetInsertPoint(bb);
 
 		// Record the function arguments in the g_named_values map.
-		g_named_values.clear();
+		// g_named_values.clear();
 		for (auto& arg : f->args()) {
 			//TODO: ensure that the type here works well (is it correct type?)
 			AllocaInst* alloca = create_entry_block_alloca(f, arg.getName(), arg.getType());
@@ -762,7 +804,9 @@ namespace AST {
 			g_named_values[std::string(arg.getName())] = alloca;
 		}
 		
+		debug_log("just before the if\n");
 		if (Value* retval = body->codegen()) {
+			debug_log("just entered the if\n");
 			// Finish off the function.
 			g_builder->CreateRet(retval);
 
@@ -774,8 +818,10 @@ namespace AST {
 				g_fpm->run(*f, *g_fam);
 			}
 
+			debug_log("just before returning from the if\n");
 			return f;
 		}
+		debug_log("just after the if\n");
 
 		// Error reading body, remove function.
 		f->eraseFromParent();
@@ -1216,6 +1262,34 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 	return std::make_unique<BlockExprAST>(exprs.back()->get_type(), std::move(exprs));
 }
 
+static std::unique_ptr<ExprAST> parse_var_expr() {
+	// Determine type of variable
+	if (g_cur_tok != tok_var) {
+		return log_syntax_error_p(
+			"Expected variable type in variable definition"
+		);
+	}
+	if (g_type_map.find(g_identifier_str) == g_type_map.end()) {
+		return log_syntax_error_p("Unsupported variable type");
+	}
+
+	LocalType type = g_type;
+	//TODO: handle security level
+	uint8_t security_level = g_security_level;
+
+	// Eat the type and get variable name
+	get_next_tok();
+	std::string var_name = g_identifier_str;
+
+	// Eat the variable name
+	get_next_tok();
+
+	return std::make_unique<LocalVariableExprAST>(
+		//TODO: consider removing last parameter
+		g_type, var_name, security_level, true 
+	);
+}
+
 // parse_primary()
 //	Determines the type of expression to parse and calls the appropriate handler
 static std::unique_ptr<ExprAST> parse_primary() {
@@ -1223,6 +1297,7 @@ static std::unique_ptr<ExprAST> parse_primary() {
 	//   ::= identifierexpr
 	//   ::= numberexpr
 	//   ::= parenexpr
+	debug_log("`parse_primary`. g_cur_tok: %i\n", g_cur_tok);
 	switch (g_cur_tok) {
 	case tok_identifier:
 		return parse_identifier_expr();
@@ -1230,8 +1305,8 @@ static std::unique_ptr<ExprAST> parse_primary() {
 		return parse_num_expr();
 	case '(':
 		return parse_paren_expr();
-	//case tok_var:
-	//	return parse_var_expr(); //function undefined currently. Should handle variable declaration
+	case tok_var:
+		return parse_var_expr(); //function undefined currently. Should handle variable declaration
 	case '{':
 		return parse_scoped_block();
 	default:
@@ -1282,11 +1357,13 @@ static int get_tok_precedence() {
 // parse_expression()
 //	Parses an expression into a left-hand-side and a right-hand-side
 static std::unique_ptr<ExprAST> parse_expression() {
+	debug_log("start of `parse_expression`\n");
 	// expression
 	//   := primary binop_rhs
 	auto lhs = parse_primary();
-	if (!lhs)
+	if (!lhs) {
 		return nullptr;
+	}
 
 	return parse_binop_rhs(0, std::move(lhs));
 }
@@ -1299,6 +1376,7 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 	//   := ('+' primary)*
 	while (true) {
 		int tok_prec = get_tok_precedence();
+		debug_log("`parse_binop_rhs`. tok_prec: %i, expr_prec: %i\n", tok_prec, expr_prec);
 
 		//if this is a binop that binds at least as tightly as the current binop,
 		//consume it, otherwise we are done.
@@ -1465,7 +1543,7 @@ static std::unique_ptr<FunctionAST> parse_function() {
 
 	flush_vars();
 
-	return fun_code
+	return fun_code;
 }
 
 // parse_extern()
@@ -1481,6 +1559,7 @@ static std::unique_ptr<PrototypeAST> parse_extern() {
 }
 
 static std::unique_ptr<FunctionAST> parse_top_level_expression() {
+	debug_log("in `parse_top_level_expression`\n");
 	/// toplevelexpr := expression
 	uint8_t security_level = 69; //TODO security level
 	if (auto expr = parse_expression()) {
@@ -1545,8 +1624,6 @@ static void parse_file() {
 			case tok_eof:
 				return;
 			case ';': // ignore top-level semicolons.
-				//! Not sure if we want to ignore for C-style code?
-				//! Maybe yes because we eat whitespace anyway
 				get_next_tok();
 				break;
 			// For defining function
