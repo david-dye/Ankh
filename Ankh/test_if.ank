@@ -5,42 +5,41 @@
 // Notice that the else statement is not necessary for you to type; however, if
 // you do NOT include it then a default else statement will be constructed that always returns 
 // the default type of the 'then' statement. This is 0 or 0.0 for integer or double types.
-// Also notice that the if statement must end with a semicolon to signify the end of an expression. 
 
 //Examples:
 
 if (1 > 0) {
-	1;
+	1
 } else {
-	2;
-};
+	2
+}
 
 if (1 < 0) {
-	1;
+	1
 } else {
-	2;
-};
+	2
+}
 
 // You don't need the parentheses around the condition, but they make code more legible.
 // Note that 0 or 0.0 are the designations for "False". Everything non-zero is considered "True".
 if 0 {
-	1;
+	1
 } else {
-	2;
-};
+	2
+}
 
 if 42 {
-	1;
+	1
 } else {
-	2;
-};
+	2
+}
 
 // This expectedly returns 1
 if 1 {
-	1;
-};
+	1
+}
 
 // This (expectedly according to the specification) returns 0, since the default else statement is used
 if 0 {
-	1;
-};
+	1
+}

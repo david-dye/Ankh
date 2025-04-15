@@ -937,7 +937,7 @@ static bool check_for_valid_name() {
 		return false;
 	}
 
-	for (auto type : g_type_map) {
+	for (auto& type : g_type_map) {
 		if (identifier_str == type.first) {
 			return false;
 		}
@@ -997,7 +997,7 @@ static int get_tok() {
 		if (g_identifier_str == "else")
 			return tok_else;
 
-		for (auto type:g_type_map) {
+		for (auto& type:g_type_map) {
 			if (g_identifier_str == type.first) {
 				//identifier is a type keyword
 
@@ -1104,7 +1104,7 @@ static std::unique_ptr<ExprAST> parse_double_expr() {
 	double d = strtod(g_number_str.c_str(), 0); // `g_number_str` is set by lexer
 	auto result = std::make_unique<DoubleAST>(LocalType::type_double, d);
 	get_next_tok(); // consume the number
-	return std::move(result);
+	return result;
 }
 
 // parse_int_expr()
@@ -1116,7 +1116,7 @@ static std::unique_ptr<ExprAST> parse_int_expr() {
 	int d = std::stoi(g_number_str); // `g_number_str` is set by lexer
 	auto result = std::make_unique<IntegerAST>(LocalType::type_int, d);
 	get_next_tok(); // consume the number
-	return std::move(result);
+	return result;
 }
 
 // parse_num_expr()
@@ -1143,8 +1143,9 @@ static std::unique_ptr<ExprAST> parse_paren_expr() {
 	}
 
 	//should be impossible to reach
-	if (g_cur_tok != ')')
+	if (g_cur_tok != ')') {
 		return log_syntax_error("expected ')'");
+	}
 
 	get_next_tok(); // eat ).
 
@@ -1226,14 +1227,10 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 
 	std::vector<std::unique_ptr<ExprAST>> exprs;
 	while (g_cur_tok != '}') {
-		std::unique_ptr<ExprAST> expr = parse_expression();
+		std::unique_ptr<ExprAST> expr = parse_expression(); //automatically loads the next token
 		if (expr) {
 			exprs.push_back(std::move(expr));
 		}
-		else {
-			return nullptr;
-		}
-		get_next_tok();
 	}
 
 	// Eat the '}'.
@@ -1241,6 +1238,11 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 	--g_scope;
 
 	flush_vars();
+
+	if (exprs.size() == 0) {
+		//no expressions were generated
+		return nullptr;
+	}
 
 	//the type of the block is the type of its return. CURRENTLY that is the final expression.
 	return std::make_unique<BlockExprAST>(exprs.back()->get_type(), std::move(exprs));
@@ -1291,7 +1293,8 @@ static std::unique_ptr<ExprAST> parse_primary() {
 	//   ::= identifierexpr
 	//   ::= numberexpr
 	//   ::= parenexpr
-	std::cout << g_cur_tok << std::endl;
+	
+	//std::cout << g_cur_tok << std::endl;
 	switch (g_cur_tok) {
 	case tok_identifier:
 		return parse_identifier_expr();
@@ -1305,6 +1308,10 @@ static std::unique_ptr<ExprAST> parse_primary() {
 		return parse_scoped_block();
 	case tok_if:
 		return parse_conditional_expr();
+	case ';':
+		//ignore semicolons
+		get_next_tok(); //eat ';'
+		return nullptr;
 	default:
 		return log_syntax_error("unknown token when expecting an expression");
 	}
@@ -1353,10 +1360,10 @@ static int get_tok_precedence() {
 static std::unique_ptr<ExprAST> parse_expression() {
 	// expression
 	//   := primary binop_rhs
-	auto lhs = parse_primary();
-	if (!lhs)
+	std::unique_ptr<ExprAST> lhs = parse_primary();
+	if (!lhs) {
 		return nullptr;
-
+	}
 	return parse_binop_rhs(0, std::move(lhs));
 }
 
@@ -1371,17 +1378,19 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 
 		//if this is a binop that binds at least as tightly as the current binop,
 		//consume it, otherwise we are done.
-		if (tok_prec < expr_prec)
-		 	// We're already inside another `parse_binop_rhs` call so it will
+		if (tok_prec < expr_prec) {
+			// We're already inside another `parse_binop_rhs` call so it will
 			// deal with the current token
 			// This will also return when the next token is not a binop
 			return lhs;
+		}
 
 		int binop = g_cur_tok;
 		get_next_tok();  // eat binop
 		auto rhs = parse_primary();
-		if (!rhs)
+		if (!rhs) {
 			return nullptr;
+		}
 
 		// Now, `g_cur_tok` is the token after rhs as `parse_primary()` ate 
 		// the ones before
@@ -1392,8 +1401,9 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 			//use tok_prec + 1 because we know that the rhs must be evaluated with 
 			//minimally higher precedence than the current binop.
 			rhs = parse_binop_rhs(tok_prec + 1, std::move(rhs));
-			if (!rhs)
+			if (!rhs) {
 				return nullptr;
+			}
 		}
 
 		//merge lhs and rhs.
