@@ -137,6 +137,7 @@ static uint8_t g_scope = 0; //the current operating scope. 0 is global
 struct AllocaProperties {
 	AllocaInst* alloca;
 	uint8_t scope = 0; //default is global scope
+	LocalType type = type_unsupported;
 };
 
 void print_map_keys(std::map<std::string, NameKeywords> mp) {
@@ -400,13 +401,16 @@ namespace AST {
 	Value* VariableExprAST::codegen() {
 		debug_log("\n\nin normal codegen\n\n\n");
 		//assumes the variable has already been emitted somewhere and its value is available.
+		print_map_keys(g_named_values);
 		AllocaInst* alloca = g_named_values[name].alloca;
+		debug_log("after access\n");
 
 		if (!alloca) {
 			printf("in that if");
 			log_compiler_error("Unknown variable name");
 		}
 		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
+		debug_log("after loading\n");
 		return loaded_value;
 	}
 
@@ -448,6 +452,7 @@ namespace AST {
 		AllocaProperties alloca_prop;
 		alloca_prop.alloca = alloca;
 		alloca_prop.scope = scope;
+		alloca_prop.type = get_type();
 		g_named_values[name] = alloca_prop;
 
 		return default_val;
@@ -837,6 +842,7 @@ namespace AST {
 		print_map_keys(g_named_values);
 		flush_named_values_map(proto->get_scope());
 		print_map_keys(g_named_values);
+		// g_named_values.clear();
 		for (auto& arg : f->args()) {
 			//TODO: ensure that the type here works well (is it correct type?)
 			AllocaInst* alloca = create_entry_block_alloca(f, arg.getName(), arg.getType());
@@ -846,17 +852,37 @@ namespace AST {
 			alloca_prop.alloca = alloca;
 			// The scope inside the function is the scope the function is in + 1
 			alloca_prop.scope = proto->get_scope() + 1;
+			std::string arg_name = arg.getName().str();
+			alloca_prop.type = proto->get_arg_type(arg_name);
 			g_named_values[std::string(arg.getName())] = alloca_prop;
 		}
-		
+		//! The problem is probably related to not adding the alloca for the var
+		//! in the basic block of the function
+		// TODO: verify that this is fine 
+		// for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
+		// 	g_builder->CreateLoad(local_type_to_llvm(it->second.type), it->second.alloca, it->first.c_str());
+		// }
+		//! so the problem is that the allocas of outside variables are not 
+		//! accessible to the function because it is part of a different basic
+		//! block, so I need to copy these into a new basic block.
+
+		//* Sol possible: use g_named maps to keep track of variables still in 
+		//* scope, keep track of values in g_named_maps, we create new allocas
+		//* for it when accessed, keep track. potential problem: keeping track
+		//* of values of different types.
 		debug_log("just before the if\n");
 		if (Value* retval = body->codegen()) {
 			debug_log("just entered the if\n");
 			// Finish off the function.
 			g_builder->CreateRet(retval);
+			debug_log("after g_builder\n");
 
 			// Validate the generated code, checking for consistency.
+			llvm::Function* test = f;
+			debug_log("after dereference");
+
 			verifyFunction(*f);
+			debug_log("after verify\n");
 
 			// Optimize the function if necessary
 			if (!g_disable_function_optimization) {
