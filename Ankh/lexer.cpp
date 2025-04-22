@@ -346,7 +346,7 @@ namespace AST {
 		int32_t val;
 
 	public:
-		IntegerAST(const LocalType type, int32_t val) : ExprAST(type), val(val) {} //! If we know that the type is integer, why do we pass the type as an argument?
+		IntegerAST(const LocalType type, int32_t val) : ExprAST(type), val(val) {} 
 		Value* codegen() override;
 	};
 
@@ -410,9 +410,7 @@ namespace AST {
 		}
 		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
 	
-		debug_log("printing loaded value: \n");
 		loaded_value->print(llvm::outs());
-		debug_log("\nprinted loaded value\n");
 
 		return loaded_value;
 	}
@@ -444,7 +442,6 @@ namespace AST {
 	};
 
 	Value* LocalVariableExprAST::codegen() {
-		debug_log("\n\nin local codegen. name: %s\n\n\n", name.c_str());
 		Function* fun = g_builder->GetInsertBlock()->getParent();
 		Type* llvm_type = local_type_to_llvm(get_type());
 		AllocaInst* alloca = create_entry_block_alloca(fun, name, llvm_type);
@@ -573,7 +570,6 @@ namespace AST {
 		}
 
 		Value* variable = g_named_values[lhse->get_name()].alloca;
-		debug_log("lhse->get_name(): %s\n", lhse->get_name().c_str());
 		if (!variable) {
 			return log_compiler_error("assignment for undefined variable");
 		}
@@ -844,9 +840,8 @@ namespace AST {
 		// determined based on the scope the function is in (as opposed to the 
 		// scope inside the function) which is determined by the scope the 
 		// prototype is in.
-		print_map_keys(g_named_values);
 		flush_named_values_map(proto->get_scope());
-		print_map_keys(g_named_values);
+
 		// Store the g_named_values in the current block
 		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
 			Type* llvm_type = local_type_to_llvm(it->second.type);
@@ -861,7 +856,7 @@ namespace AST {
 			alloca_prop.val = val;
 			g_named_values[it->first] = alloca_prop;
 		}
-		// g_named_values.clear();
+		// Add function arguments to the store 
 		for (auto& arg : f->args()) {
 			//TODO: ensure that the type here works well (is it correct type?)
 			AllocaInst* alloca = create_entry_block_alloca(f, arg.getName(), arg.getType());
@@ -877,32 +872,24 @@ namespace AST {
 			g_named_values[std::string(arg.getName())] = alloca_prop;
 		}
 		
-		debug_log("just before the if\n");
 		if (Value* retval = body->codegen()) {
-			debug_log("just entered the if, printing retval:\n");
 			retval->print(llvm::outs());
-			debug_log("\nfinished printing retval\n");
 
 			// Finish off the function.
 			g_builder->CreateRet(retval);
-			debug_log("after g_builder\n");
 
 			// Validate the generated code, checking for consistency.
 			llvm::Function* test = f;
-			debug_log("after dereference");
 
 			verifyFunction(*f);
-			debug_log("after verify\n");
 
 			// Optimize the function if necessary
 			if (!g_disable_function_optimization) {
 				g_fpm->run(*f, *g_fam);
 			}
 
-			debug_log("just before returning from the if\n");
 			return f;
 		}
-		debug_log("just after the if\n");
 
 		// Error reading body, remove function.
 		f->eraseFromParent();
@@ -926,11 +913,6 @@ namespace AST {
 	Value* BlockExprAST::codegen() {
 		//TODO: need to add the ability to return early from a block
 		Value* last = nullptr;
-		//! I feel confident that the content of the function should be
-		//! %x2 = load i32, ptr %x, align 4 rather than 0, why is it 0?
-		//! Maybe it's a problem with parsing the function body
-		//! Actually, I think the problem is that the value of x was not
-		//! modified
 		for (auto& expr : body) {
 			last = expr->codegen();
 		}
@@ -1000,8 +982,6 @@ static std::string get_next_identifier(int n = 1) {
 	//generates the next keyword, starting by ignoring whitespace
 	int i = 0;
 	std::string identifier_str; //the next identifier, starting with current_char
-	//! If this loop faces an unexpected character (e.g., '('), it returns that 
-	//! character.
 	for (int j = 0; j < n; ++j) {
 		char current_char = g_line[g_line_idx];
 		while (current_char == ' ' || current_char == '\t' || current_char == '\r') {
@@ -1086,8 +1066,6 @@ static int get_tok() {
 
 		//division operator
 		++g_line_idx;
-		//! Interesting. so if we have a line with just / we will consider it a
-		//! division operator. This kinda makes sense.
 		return '/';
 	}
 
@@ -1388,7 +1366,6 @@ static std::unique_ptr<ExprAST> parse_primary() {
 	//   ::= identifierexpr
 	//   ::= numberexpr
 	//   ::= parenexpr
-	debug_log("`parse_primary`. g_cur_tok: %i\n", g_cur_tok);
 	switch (g_cur_tok) {
 	case tok_identifier:
 		return parse_identifier_expr();
@@ -1407,20 +1384,19 @@ static std::unique_ptr<ExprAST> parse_primary() {
 }
 
 //mapping from binary operator to precedence value
-//! Maybe do a g_binop_precedence?
-static std::map<char, int> binop_precedence;
+static std::map<char, int> g_binop_precedence;
 
 // set_binop_precedence()
 //	Sets the precedence of all binary operators, such as +, -, *, and /.
 static void set_binop_precedence() {
 	//higher precedence is performed first
-	binop_precedence['='] = 2;
-	binop_precedence['<'] = 10;
-	binop_precedence['>'] = 10;
-	binop_precedence['+'] = 20;
-	binop_precedence['-'] = 20;
-	binop_precedence['*'] = 40;
-	binop_precedence['/'] = 40;
+	g_binop_precedence['='] = 2;
+	g_binop_precedence['<'] = 10;
+	g_binop_precedence['>'] = 10;
+	g_binop_precedence['+'] = 20;
+	g_binop_precedence['-'] = 20;
+	g_binop_precedence['*'] = 40;
+	g_binop_precedence['/'] = 40;
 }
 
 
@@ -1431,13 +1407,13 @@ static int get_tok_precedence() {
 		return -1;
 	}
 
-	if (binop_precedence.empty()) {
+	if (g_binop_precedence.empty()) {
 		set_binop_precedence();
 	}
 
 	// Will automatically deal with invalid tokens because they're not in the
 	// map
-	int tok_prec = binop_precedence[g_cur_tok];
+	int tok_prec = g_binop_precedence[g_cur_tok];
 	if (tok_prec <= 0) {
 		//undefined operator
 		return -1;
@@ -1448,7 +1424,6 @@ static int get_tok_precedence() {
 // parse_expression()
 //	Parses an expression into a left-hand-side and a right-hand-side
 static std::unique_ptr<ExprAST> parse_expression() {
-	debug_log("start of `parse_expression`\n");
 	// expression
 	//   := primary binop_rhs
 	auto lhs = parse_primary();
@@ -1467,7 +1442,6 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 	//   := ('+' primary)*
 	while (true) {
 		int tok_prec = get_tok_precedence();
-		debug_log("`parse_binop_rhs`. tok_prec: %i, expr_prec: %i\n", tok_prec, expr_prec);
 
 		//if this is a binop that binds at least as tightly as the current binop,
 		//consume it, otherwise we are done.
@@ -1652,7 +1626,6 @@ static std::unique_ptr<PrototypeAST> parse_extern() {
 }
 
 static std::unique_ptr<FunctionAST> parse_top_level_expression() {
-	debug_log("in `parse_top_level_expression`\n");
 	/// toplevelexpr := expression
 	uint8_t security_level = 69; //TODO security level
 	if (auto expr = parse_expression()) {
