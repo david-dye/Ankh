@@ -409,6 +409,10 @@ namespace AST {
 			log_compiler_error("Unknown variable name");
 		}
 		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
+	
+		debug_log("printing loaded value: \n");
+		loaded_value->print(llvm::outs());
+		debug_log("\nprinted loaded value\n");
 
 		return loaded_value;
 	}
@@ -595,6 +599,7 @@ namespace AST {
 
 
 		g_builder->CreateStore(val, variable);
+		g_named_values[lhse->get_name()].val = val;
 		return val;
 	}
 
@@ -924,6 +929,8 @@ namespace AST {
 		//! I feel confident that the content of the function should be
 		//! %x2 = load i32, ptr %x, align 4 rather than 0, why is it 0?
 		//! Maybe it's a problem with parsing the function body
+		//! Actually, I think the problem is that the value of x was not
+		//! modified
 		for (auto& expr : body) {
 			last = expr->codegen();
 		}
