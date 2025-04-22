@@ -9,6 +9,7 @@
 #include <cstdarg>
 
 #pragma warning(push, 0) //these headers have a million warnings (sloppily written?)
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
@@ -400,18 +401,15 @@ namespace AST {
 	};
 
 	Value* VariableExprAST::codegen() {
-		debug_log("\n\nin normal codegen\n\n\n");
 		//assumes the variable has already been emitted somewhere and its value is available.
-		// print_map_keys(g_named_values);
 		AllocaInst* alloca = g_named_values[name].alloca;
-		debug_log("after access\n");
 
 		if (!alloca) {
 			printf("in that if");
 			log_compiler_error("Unknown variable name");
 		}
 		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
-		debug_log("after loading\n");
+
 		return loaded_value;
 	}
 
@@ -873,26 +871,13 @@ namespace AST {
 			alloca_prop.val = &arg;
 			g_named_values[std::string(arg.getName())] = alloca_prop;
 		}
-		//! The problem is probably related to not adding the alloca for the var
-		//! in the basic block of the function
-		// TODO: verify that this is fine 
-		// for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
-		// 	g_builder->CreateLoad(local_type_to_llvm(it->second.type), it->second.alloca, it->first.c_str());
-		// }
-		//! so the problem is that the allocas of outside variables are not 
-		//! accessible to the function because it is part of a different basic
-		//! block, so I need to copy these into a new basic block.
-
-		//* Sol possible: use g_named maps to keep track of variables still in 
-		//* scope, keep track of values in g_named_maps, we create new allocas
-		//* for it when accessed, keep track. potential problem: keeping track
-		//* of values of different types.
-		//! Let's try to implement this, the goal is to store the value as a 
-		//! a type Value*. Let's see if this is possible by looking up 
-		//! g_named_values
+		
 		debug_log("just before the if\n");
 		if (Value* retval = body->codegen()) {
-			debug_log("just entered the if\n");
+			debug_log("just entered the if, printing retval:\n");
+			retval->print(llvm::outs());
+			debug_log("\nfinished printing retval\n");
+
 			// Finish off the function.
 			g_builder->CreateRet(retval);
 			debug_log("after g_builder\n");
@@ -936,6 +921,9 @@ namespace AST {
 	Value* BlockExprAST::codegen() {
 		//TODO: need to add the ability to return early from a block
 		Value* last = nullptr;
+		//! I feel confident that the content of the function should be
+		//! %x2 = load i32, ptr %x, align 4 rather than 0, why is it 0?
+		//! Maybe it's a problem with parsing the function body
 		for (auto& expr : body) {
 			last = expr->codegen();
 		}
@@ -1272,8 +1260,6 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 	get_next_tok();  //eat identifier.
 	
 
-	//! todeal with the current thing, make sure we don't test with = sign.
-	//! the current problem is that the identifier is there ("secret") and then
 	if (g_cur_tok != '(') {
 		// The identifier is a variable name. If it is not already defined, then its type is g_type
 		bool new_var = true; //whether the identifier is new or already defined

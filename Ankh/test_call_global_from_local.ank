@@ -1,7 +1,6 @@
-int bar(int x) {
-    x*x*x;
+int x;
+x = 10;
+int f(int y) {
+    x;
 }
-
-int foo(int x) {
-    bar(x*x);
-}
+f(4);
