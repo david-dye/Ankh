@@ -138,6 +138,7 @@ struct AllocaProperties {
 	AllocaInst* alloca;
 	uint8_t scope = 0; //default is global scope
 	LocalType type = type_unsupported;
+	Value* val;
 };
 
 void print_map_keys(std::map<std::string, NameKeywords> mp) {
@@ -401,7 +402,7 @@ namespace AST {
 	Value* VariableExprAST::codegen() {
 		debug_log("\n\nin normal codegen\n\n\n");
 		//assumes the variable has already been emitted somewhere and its value is available.
-		print_map_keys(g_named_values);
+		// print_map_keys(g_named_values);
 		AllocaInst* alloca = g_named_values[name].alloca;
 		debug_log("after access\n");
 
@@ -453,6 +454,7 @@ namespace AST {
 		alloca_prop.alloca = alloca;
 		alloca_prop.scope = scope;
 		alloca_prop.type = get_type();
+		alloca_prop.val = default_val;
 		g_named_values[name] = alloca_prop;
 
 		return default_val;
@@ -842,6 +844,20 @@ namespace AST {
 		print_map_keys(g_named_values);
 		flush_named_values_map(proto->get_scope());
 		print_map_keys(g_named_values);
+		// Store the g_named_values in the current block
+		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
+			Type* llvm_type = local_type_to_llvm(it->second.type);
+			AllocaInst* alloca = create_entry_block_alloca(f, it->first, llvm_type);
+			Value* val = it->second.val;
+			g_builder->CreateStore(val, alloca);
+
+			AllocaProperties alloca_prop;
+			alloca_prop.alloca = alloca;
+			alloca_prop.scope = it->second.scope;
+			alloca_prop.type = it->second.type;
+			alloca_prop.val = val;
+			g_named_values[it->first] = alloca_prop;
+		}
 		// g_named_values.clear();
 		for (auto& arg : f->args()) {
 			//TODO: ensure that the type here works well (is it correct type?)
@@ -854,6 +870,7 @@ namespace AST {
 			alloca_prop.scope = proto->get_scope() + 1;
 			std::string arg_name = arg.getName().str();
 			alloca_prop.type = proto->get_arg_type(arg_name);
+			alloca_prop.val = &arg;
 			g_named_values[std::string(arg.getName())] = alloca_prop;
 		}
 		//! The problem is probably related to not adding the alloca for the var
@@ -870,6 +887,9 @@ namespace AST {
 		//* scope, keep track of values in g_named_maps, we create new allocas
 		//* for it when accessed, keep track. potential problem: keeping track
 		//* of values of different types.
+		//! Let's try to implement this, the goal is to store the value as a 
+		//! a type Value*. Let's see if this is possible by looking up 
+		//! g_named_values
 		debug_log("just before the if\n");
 		if (Value* retval = body->codegen()) {
 			debug_log("just entered the if\n");
