@@ -21,6 +21,9 @@
     <ClCompile Include="test_assign_var_to_var.ank">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="test_security_fail1.ank">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="test_ops.ank" />
@@ -47,5 +50,6 @@
     <None Include="test_scratch.ank" />
     <None Include="test_var_definition.ank" />
     <None Include="test_assign_var_to_var_fail.ank" />
+    <None Include="test_security.ank" />
   </ItemGroup>
 </Project>

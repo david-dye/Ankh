@@ -61,13 +61,16 @@ static unsigned int isascii(unsigned int ch) {
 }
 #endif
 
-uint8_t constexpr SECURITY_MIN = 0;
-uint8_t constexpr SECURITY_MAX = UINT8_MAX;
+typedef uint8_t sectype;
+
+sectype constexpr SECURITY_MIN = 0;
+sectype constexpr SECURITY_MAX = UINT8_MAX;
 uint8_t constexpr SCOPE_MAX = UINT8_MAX;
 
 
 using namespace llvm;
 // TODO: consider changing doubles to floats
+// We could remove double support altogether, but I don't see why we would change doubles to floats
 
 
 // The lexer returns tokens [0-255] if it is an unknown character, otherwise one
@@ -121,28 +124,36 @@ bool g_seen_errors = false;				// Whether any errors were encountered while pars
 static std::string g_identifier_str;	// Filled in for tok_identifier
 static std::string g_prev_identifier_str;
 static bool g_disable_function_optimization;
-static std::string g_number_str;		// Filled in for tok_num, stored as string to enable infinite precision
-static bool g_number_has_period; 		// Helps distinguish between floats and ints
+static std::string g_number_str;			// Filled in for tok_num, stored as string to enable infinite precision
+static sectype g_sectype = SECURITY_MIN;	// Changes only when a new security identifier is seen or used
+static bool g_number_has_period; 			// Helps distinguish between floats and ints
 static LocalType g_type = type_unsupported;	// Used when a variable or function is defined
-static uint8_t g_security_level = SECURITY_MIN;
 
 
 //contains everything you could possibly want to know about a name.
 //that means if you want to know something about a variable and you don't, add it to this struct.
 struct NameKeywords {
 	LocalType type = type_unsupported;
-	uint8_t security = SECURITY_MIN;
+	sectype security = SECURITY_MIN;
 	uint8_t scope = 0; //default is global scope
 	bool is_fun = false; //if false, the name corresponds to a variable
 };
 
+struct FunctionKeywords {
+	NameKeywords fn;
+	std::vector<NameKeywords> args;
+};
+
+
+
 static std::map<std::string, NameKeywords> g_var_names; //variable names and info
-static std::map<std::string, NameKeywords> g_fun_names; //function names and info
+static std::map<std::string, FunctionKeywords> g_fun_names; //function names and info
 static uint8_t g_scope = 0; //the current operating scope. 0 is global
 
 struct AllocaProperties {
 	AllocaInst* alloca;
 	uint8_t scope = 0; //default is global scope
+	sectype security = SECURITY_MIN;
 	LocalType type = type_unsupported;
 	Value* val;
 };
@@ -174,7 +185,6 @@ static std::unique_ptr<ModuleAnalysisManager> g_mam;
 static std::unique_ptr<PassInstrumentationCallbacks> g_pic;
 static std::unique_ptr<StandardInstrumentations> g_si;
 
-static Value* get_default_type_value(Type* type);
 
 // initialize_llvm()
 //	Initializes the LLVM context, module, and builder to allow
@@ -224,11 +234,22 @@ static void initialize_llvm_module() {
 
 // log_compiler_error(str)
 //	Logs a compilation error and returns a nullptr of type Value.
-//	Also sets the g_seen_errors flag to true.
+//	Also sets the g_seen_errors flag to true, preventing code output
 Value* log_compiler_error(const char* str) {
 	g_seen_errors = true;
 	fprintf(stderr, "[%lu, %lu]: CompilerError: %s\n", g_line_count, g_line_idx, str);
 	return nullptr;
+}
+
+
+//======================================================================================================
+// Security
+//======================================================================================================
+
+// Return the least upper bound between two security types.
+// This is equivalent to max(s1, s2), but follows the language of noninterference literature.
+static inline sectype security_LUB(sectype s1, sectype s2) {
+	return (s1 > s2) ? s1 : s2;
 }
 
 
@@ -320,7 +341,7 @@ namespace AST {
 		else if (type->isFloatingPointTy()) {
 			return ConstantFP::get(type, 0.0);
 		}
-		log_compiler_error("Unsupported type for default else value");
+		log_compiler_error("Unsupported type for default type value");
 		return nullptr;
 	}
 
@@ -338,12 +359,18 @@ namespace AST {
 	// ExprAST - Base class for all expression nodes.
 	class ExprAST {
 		LocalType type;
+		sectype security;
+
 
 	public:
-		ExprAST(const LocalType type) : type(type) {}
+		ExprAST(const LocalType type, sectype security) : type(type), security(security) {}
 
 		const LocalType get_type() const {
 			return type;
+		}
+
+		const sectype get_security() const {
+			return security;
 		}
 
 		virtual ~ExprAST() = default;
@@ -355,7 +382,7 @@ namespace AST {
 		double val;
 
 	public:
-		DoubleAST(const LocalType type, double val) : ExprAST(type), val(val) {}
+		DoubleAST(const LocalType type, double val, const sectype security=SECURITY_MIN) : ExprAST(type, security), val(val) {}
 		Value* codegen() override;
 	};
 
@@ -368,7 +395,7 @@ namespace AST {
 		int32_t val;
 
 	public:
-		IntegerAST(const LocalType type, int32_t val) : ExprAST(type), val(val) {} 
+		IntegerAST(const LocalType type, int32_t val, const sectype security=SECURITY_MIN) : ExprAST(type, security), val(val) {} 
 		Value* codegen() override;
 	};
 
@@ -386,7 +413,7 @@ namespace AST {
 		std::string val;
 
 	public:
-		InfIntegerAST(const LocalType type, const std::string& val) : ExprAST(type), val(val) {}
+		InfIntegerAST(const LocalType type, const std::string& val, const sectype security=SECURITY_MIN) : ExprAST(type, security), val(val) {}
 		Value* codegen() override;
 	};
 	// TODO: add codegen()
@@ -394,12 +421,19 @@ namespace AST {
 	/// VariableExprAST - Expression class for referencing a variable, like "a".
 	class VariableExprAST : public ExprAST {
 		std::string name;
-		uint8_t security_level;
 		uint8_t scope;
 
 	public:
-		VariableExprAST(const LocalType type, const std::string& name, const uint8_t security_level, bool new_var, uint8_t scope) 
-			: ExprAST(type), name(name), security_level(security_level), scope(scope) {
+		VariableExprAST(
+			const LocalType type,
+			const std::string& name,
+			bool new_var, uint8_t scope, 
+			const sectype security=SECURITY_MIN
+		) : 
+			ExprAST(type, security), 
+			name(name),
+			scope(scope) 
+		{
 			if (!new_var) {
 				//no need to do anything for a variable already defined
 				return;
@@ -410,9 +444,9 @@ namespace AST {
 			nk.is_fun = false;
 			// g_scope is the current scope the code is in
 			nk.scope = g_scope;
-			nk.security = security_level;
-			nk.type = type;
-			g_var_names[name] = nk;
+			nk.security = this->get_security();
+			nk.type = this->get_type();
+			g_var_names[this->name] = nk;
 		}
 		Value* codegen() override;
 		std::string get_name() {
@@ -431,28 +465,32 @@ namespace AST {
 
 		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
 	
-		loaded_value->print(llvm::outs());
+		//loaded_value->print(llvm::outs());
 
 		return loaded_value;
 	}
 
 	class LocalVariableExprAST : public ExprAST {
 		std::string name;
-		uint8_t security_level;
 		uint8_t scope;
 
 	public:
-		LocalVariableExprAST(const LocalType type, const std::string& name, const uint8_t security_level) 
-			: ExprAST(type), name(name), security_level(security_level) {
-
+		LocalVariableExprAST(
+			const LocalType type, 
+			const std::string& name, 
+			const sectype security
+		) : 
+			ExprAST(type, security), 
+			name(name) 
+		{
 			//add new variable to the global names map at the current scope
 			NameKeywords nk;
 			nk.is_fun = false;
 			// g_scope is the current scope the code is in
 			nk.scope = g_scope;
-			nk.security = security_level;
-			nk.type = type;
-			g_var_names[name] = nk;
+			nk.security = this->get_security();
+			nk.type = this->get_type();
+			g_var_names[this->name] = nk;
 
 			scope = g_scope;
 		}
@@ -483,6 +521,7 @@ namespace AST {
 
 	class IfExprAST : public ExprAST {
 		std::unique_ptr<ExprAST> cond_expr, then_expr, else_expr;
+		bool valid = true;
 
 	public:
 		IfExprAST (
@@ -490,16 +529,27 @@ namespace AST {
 			std::unique_ptr<ExprAST> then_expr,
 			std::unique_ptr<ExprAST> else_expr
 		) : 
-			ExprAST(then_expr->get_type()), 
+			ExprAST(then_expr->get_type(), then_expr->get_security()), 
 			cond_expr(std::move(cond_expr)), 
 			then_expr(std::move(then_expr)), 
 			else_expr(std::move(else_expr)) 
 		{
+			if (this->cond_expr->get_security() > SECURITY_MIN) {
+				valid = false;
+				log_compiler_error("The security level of a condition must not be higher than public.");
+			}
 			if (this->else_expr && this->else_expr->get_type() != this->then_expr->get_type()) {
 				//If there is an "else" expression and it has a different type than the "then" expression
 				//You can think of an if statement in Ankh as being like a ternary operator.
 				//An if expression without an else expression creates a default else expression that always returns 0.
+				valid = false;
 				log_compiler_error("Both branches of the if expression must have the same return type.");
+			}
+			if (this->else_expr && this->else_expr->get_security() != this->then_expr->get_security()) {
+				//we enforce that both branches have the same security type. This is overly restrictive,
+				//but it simplifies codegen and verification significantly.
+				valid = false;
+				log_compiler_error("Both branches of the if expression must have the same security type.");
 			}
 		}
 
@@ -507,6 +557,11 @@ namespace AST {
 	};
 
 	Value* IfExprAST::codegen() {
+
+		if (!valid) {
+			return nullptr;
+		}
+
 		Value* cond_v = cond_expr->codegen();
 		if (!cond_v) {
 			return nullptr;
@@ -599,10 +654,17 @@ namespace AST {
 		std::unique_ptr<ExprAST> lhs, rhs;
 
 	public:
-	 	// TODO: deal with the type here
-		BinaryExprAST(const LocalType type, char op, std::unique_ptr<ExprAST> lhs, std::unique_ptr<ExprAST> rhs)
-			: ExprAST(type), op(op), lhs(std::move(lhs)), rhs(std::move(rhs)) {
-		}
+		BinaryExprAST (
+			const LocalType type, 
+			char op, 
+			std::unique_ptr<ExprAST> lhs, 
+			std::unique_ptr<ExprAST> rhs
+		) : 
+			ExprAST(type, security_LUB(lhs->get_security(), rhs->get_security())),
+			op(op), 
+			lhs(std::move(lhs)), 
+			rhs(std::move(rhs))
+		{}
 		Value* codegen_less(Value* L, Value* R, LocalType type);
 		Value* codegen_add(Value* L, Value* R, LocalType type);
 		Value* codegen_sub(Value* L, Value* R, LocalType type);
@@ -676,6 +738,11 @@ namespace AST {
 	// with type `type`
 	Value* BinaryExprAST::codegen_div(Value* L, Value* R, LocalType type) {
 		//It is possible to generate code giving division by 0. Maybe this is okay since it fails at runtime
+
+		if (this->get_security() > SECURITY_MIN) {
+			return log_compiler_error("Division is only permitted on low security types.");
+		}
+
 		switch (type) {
 		case type_int:
 			//signed integer division
@@ -690,6 +757,11 @@ namespace AST {
 	}
 
 	Value* BinaryExprAST::codegen_assign() {
+
+		if (this->get_security() != lhs->get_security()) {
+			return log_compiler_error("Security level of a variable must be at least the security level of the assigned value.");
+		}
+
 		VariableExprAST* lhse = static_cast<VariableExprAST*>(lhs.get());
 		if (!lhse) {
 			return log_compiler_error(
@@ -714,6 +786,10 @@ namespace AST {
 
 		llvm::Type* var_type = allocaInst->getAllocatedType();
 
+
+		std::cout << "Assign Check: " << var_type->getTypeID() << '\t' << val->getType()->getTypeID() << int(val->getType()->isPointerTy()) << std::endl;
+
+
 		if (!(var_type->isIntegerTy()) && !(var_type->isFloatingPointTy())) {
 			return log_compiler_error("Invalid assignment: variable is not a valid type.");
 		}
@@ -728,6 +804,7 @@ namespace AST {
 		) {
 			return log_compiler_error("Invalid assignment: type of value is different from type of variable.");
 		}
+
 
 		// Removed this as `g_var_names` as the variables may be flushed at this
 		// point
@@ -811,7 +888,7 @@ namespace AST {
 				R->getType()->getTypeID()
 			);
 			//for (auto& it : g_fun_names) {
-			//	std::cout << it.first << " has type: " << it.second.type << std::endl;
+			//	std::cout << it.first << " has type: " << it.second[fn].type << std::endl;
 			//}
 			return nullptr;
 		}
@@ -841,26 +918,47 @@ namespace AST {
 		std::vector<std::unique_ptr<ExprAST>> args;
 
 	public:
-		CallExprAST(const LocalType type, const std::string& callee, std::vector<std::unique_ptr<ExprAST>> args)
-			: ExprAST(type), callee(callee), args(std::move(args)) {
-		}
+		CallExprAST(
+			const LocalType type, 
+			const std::string& callee, 
+			std::vector<std::unique_ptr<ExprAST>> args, 
+			const sectype security=SECURITY_MIN
+		) : 
+			ExprAST(type, security), 
+			callee(callee), 
+			args(std::move(args)) 
+		{}
 		Value* codegen() override;
 	};
 
 	Value* CallExprAST::codegen() {
 		// Look up the name in the global module table.
 		Function* callee_f = g_module->getFunction(callee);
-		if (!callee_f) {
+
+		if (!callee_f || g_fun_names.find(callee) == g_fun_names.end()) {
+			//the callee could not be found in the symbol table or it could not be found in the named function list 
 			return log_compiler_error("Unknown function referenced");
 		}
 
+		FunctionKeywords fun_signature = g_fun_names[callee];
+
 		// If argument mismatch error.
-		if (callee_f->arg_size() != args.size()) {
-			return log_compiler_error("Incorrect # arguments passed");
+		if (callee_f->arg_size() != args.size() || callee_f->arg_size() != fun_signature.args.size()) {
+			return log_compiler_error("Incorrect number of arguments passed");
 		}
 
 		std::vector<Value*> args_v;
 		for (size_t i = 0, e = args.size(); i != e; ++i) {
+			//verify that function call matches function signature at argument i
+			NameKeywords expected = fun_signature.args[i];
+			if (args[i]->get_type() != expected.type) {
+				return log_compiler_error("Argument type mismatch between function and call");
+			}
+			if (args[i]->get_security() != expected.security) {
+				return log_compiler_error("Argument security mismatch between function and call");
+			}
+
+			//argument i matches, we can codegen it and add it to the call
 			args_v.push_back(args[i]->codegen());
 			if (!args_v.back()) {
 				return nullptr;
@@ -877,7 +975,6 @@ namespace AST {
 		std::string name;
 		std::vector<std::string> args; //this will likely need to contain more than just the name of arguments
 		std::map<std::string, NameKeywords> arg_types;
-		uint8_t security_level;
 		uint8_t scope;
 
 	public:
@@ -886,25 +983,30 @@ namespace AST {
 			const std::string& name, 
 			std::vector<std::string> args, 
 			std::map<std::string, NameKeywords> arg_types, 
-			uint8_t security_level
+			sectype security=SECURITY_MIN
 		) : 
-			ExprAST(type), 
+			ExprAST(type, security), 
 			name(name), 
-			args(std::move(args)),
-			security_level(security_level) 
+			args(std::move(args))
 		{
 			//add the function name to the global names
+			FunctionKeywords fk;
 			NameKeywords nk;
 			nk.is_fun = false;
 			nk.scope = g_scope;
-			nk.security = security_level;
-			nk.type = type;
-			g_fun_names[name] = nk;
+			nk.security = this->get_security();
+			nk.type = this->get_type();
+			fk.fn = nk;
+			std::vector<NameKeywords> arg_keywords;
 
 			//add the argument names to the local variable names
 			for (const auto& [name_i, nk_i] : arg_types) {
 				g_var_names[name_i] = nk_i;
+				arg_keywords.push_back(nk_i);
 			}
+
+			fk.args = std::move(arg_keywords);
+			g_fun_names[this->name] = fk;
 
 			this->arg_types = std::move(arg_types);
 			scope = g_scope;
@@ -917,7 +1019,6 @@ namespace AST {
 		const std::string& get_arg_by_idx(size_t i) const { assert(i < get_nargs()); return args[i]; }
 		const LocalType get_arg_type(std::string& arg) { return arg_types[arg].type; }
 		const uint8_t get_scope() const { return scope; }
-		const uint8_t get_security_level() const { return security_level; }
 	};
 
 	Function* PrototypeAST::codegen() {
@@ -929,7 +1030,6 @@ namespace AST {
 			Args[i] = local_type_to_llvm(arg_type);
 		}
 
-		// TODO: approrpirate function type
 		Type* llvm_type = local_type_to_llvm(get_type());
 		FunctionType* FT = FunctionType::get(llvm_type, Args, false);
 
@@ -949,7 +1049,6 @@ namespace AST {
 		std::unique_ptr<ExprAST> body;
 
 	public:
-	 	// TODO: figure out if we want to give this a type
 		FunctionAST(std::unique_ptr<PrototypeAST> proto, std::unique_ptr<ExprAST> body)
 			: proto(std::move(proto)), body(std::move(body)) {
 		}
@@ -961,14 +1060,17 @@ namespace AST {
 		// First, check for an existing function from a previous 'extern' declaration.
 		Function* f = g_module->getFunction(proto->get_name());
 
-		if (!f)
+		if (!f) {
 			f = proto->codegen();
+		}
 
-		if (!f)
+		if (!f) {
 			return nullptr;
+		}
 
-		if (!f->empty())
+		if (!f->empty()) {
 			return (Function*)log_compiler_error("Function cannot be redefined.");
+		}
 
 
 		//verify that the signature of f is the same as the prototype
@@ -1028,20 +1130,21 @@ namespace AST {
 		}
 		
 		if (Value* retval = body->codegen()) {
-			retval->print(llvm::outs());
+			//retval->print(llvm::outs());
 
 			// Finish off the function.
 			g_builder->CreateRet(retval);
 
 			// Validate the generated code, checking for consistency.
-			llvm::Function* test = f;
+			// Currently this isn't being used... is something missing?
+			//llvm::Function* test = f;
 
 			verifyFunction(*f);
 
 			// Optimize the function if necessary
-			if (!g_disable_function_optimization) {
-				g_fpm->run(*f, *g_fam);
-			}
+			//if (!g_disable_function_optimization) {
+			//	g_fpm->run(*f, *g_fam);
+			//}
 
 			return f;
 		}
@@ -1058,9 +1161,9 @@ namespace AST {
 
 	public:
 		// TODO: figure out if we want to give this a type
-		BlockExprAST(LocalType type, std::vector<std::unique_ptr<ExprAST>> body)
-			: ExprAST(type), body(std::move(body)) {
-		}
+		BlockExprAST(LocalType type, std::vector<std::unique_ptr<ExprAST>> body, const sectype security=SECURITY_MIN)
+			: ExprAST(type, security), body(std::move(body)) 
+		{}
 
 		Value* codegen() override;
 	};
@@ -1071,7 +1174,14 @@ namespace AST {
 		for (auto& expr : body) {
 			last = expr->codegen();
 		}
-		flush_vars();
+
+		//the following checks assume the return value is the last expression in the block.
+		if (body.size() > 0 && body[body.size() - 1]->get_security() != this->get_security()) {
+			return log_compiler_error("Invalid security level generated from block.");
+		}
+		if (body.size() > 0 && body[body.size() - 1]->get_type() != this->get_type()) {
+			return log_compiler_error("Invalid type generated from block.");
+		}
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
@@ -1182,6 +1292,10 @@ static bool check_for_valid_name() {
 	}
 
 	return true;
+}
+
+static inline size_t get_num_digits(int x) {
+	return static_cast<size_t>(floor(log10(static_cast<double>(x)))) + 1;
 }
 
 
@@ -1305,6 +1419,37 @@ static int get_tok() {
 		return tok_num;
 	}
 
+	if (g_line[g_line_idx] == '$') {
+		std::string num_str = "";
+		++g_line_idx;
+		while (isdigit(g_line[g_line_idx])) {
+			num_str += g_line[g_line_idx];
+			++g_line_idx;
+		}
+		if (num_str.size() == 0 || num_str.size() > get_num_digits(SECURITY_MAX)) {
+			log_syntax_error("Invalid security number provided. Must be in [SECURITY_MIN, SECURITY_MAX].");
+			read_line();
+			return get_tok();
+		}
+		int sectype_guess = std::stoi(num_str);
+		if (sectype_guess < SECURITY_MIN || sectype_guess > SECURITY_MAX) {
+			log_syntax_error("Invalid security number provided. Must be in [SECURITY_MIN, SECURITY_MAX].");
+			read_line();
+			return get_tok();
+		}
+		//set the security level since the provided code was valid
+		g_sectype = static_cast<sectype>(sectype_guess);
+
+		//the next token must be a function or variable
+		int cur_tok = get_tok();
+		if (cur_tok != tok_var && cur_tok != tok_fun) {
+			log_syntax_error("Invalid use of security type. Must be followed by a variable or function identifier.");
+			read_line();
+			return get_tok();
+		}
+		return cur_tok;
+	}
+
 	//special or unknown character, such as a binary operator or paretheses
 	++g_line_idx;
 	return g_line[g_line_idx - 1];
@@ -1340,7 +1485,8 @@ static int get_next_tok() {
 //	Parse a double precision float number expression
 static std::unique_ptr<ExprAST> parse_double_expr() {
 	double d = strtod(g_number_str.c_str(), 0); // `g_number_str` is set by lexer
-	auto result = std::make_unique<DoubleAST>(LocalType::type_double, d);
+	auto result = std::make_unique<DoubleAST>(LocalType::type_double, d, g_sectype);
+	g_sectype = SECURITY_MIN; //used up the security type, reset
 	get_next_tok(); // consume the number
 	return result;
 }
@@ -1352,7 +1498,8 @@ static std::unique_ptr<ExprAST> parse_int_expr() {
 	//* parse using more sophisticated function (e.g., create a vector and
 	//* parse as an InfIntAST class)
 	int d = std::stoi(g_number_str); // `g_number_str` is set by lexer
-	auto result = std::make_unique<IntegerAST>(LocalType::type_int, d);
+	auto result = std::make_unique<IntegerAST>(LocalType::type_int, d, g_sectype);
+	g_sectype = SECURITY_MIN; //used up the security type, reset
 	get_next_tok(); // consume the number
 	return result;
 }
@@ -1399,8 +1546,8 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 
 	std::string id_name = g_identifier_str; // Set by lexer
 	LocalType type = g_type;
-	//! To deal with this we need to make the lexer parse security levels
-	uint8_t security_level = 69; //TODO security levels
+	sectype security = g_sectype;
+	g_sectype = SECURITY_MIN; //used up the security type, reset
 
 	get_next_tok();  //eat identifier.
 	
@@ -1413,13 +1560,15 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 			type = g_var_names[id_name].type;
 			new_var = false;
 			scope = g_var_names[id_name].scope;
+			security = g_var_names[id_name].security;
 		}
-		return std::make_unique<VariableExprAST>(type, id_name, security_level, new_var, scope); 
+		return std::make_unique<VariableExprAST>(type, id_name, new_var, scope, security); 
 	}
 
 	// The identifier is a function name. If it is not already defined, then its type is g_type
 	if (is_named_fun(id_name)) {
-		type = g_fun_names[id_name].type;
+		type = g_fun_names[id_name].fn.type;
+		security = g_fun_names[id_name].fn.security;
 	}
 
 	get_next_tok();  // eat (
@@ -1449,7 +1598,7 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 	// Eat the ')'.
 	get_next_tok();
 
-	return std::make_unique<CallExprAST>(type, id_name, std::move(args));
+	return std::make_unique<CallExprAST>(type, id_name, std::move(args), security);
 }
 
 // parse_scoped_block()
@@ -1487,7 +1636,7 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 	// Note: `flush_vars()` and `g_var_names` should only be used when parsing
 	// and using it in `codegen` can cause unexpected behavior
 	std::unique_ptr<BlockExprAST> block_code = std::make_unique<BlockExprAST>(
-		exprs.back()->get_type(), std::move(exprs)
+		exprs.back()->get_type(), std::move(exprs), exprs.back()->get_security()
 	);
 
 	flush_vars();
@@ -1508,8 +1657,8 @@ static std::unique_ptr<ExprAST> parse_var_expr() {
 	}
 
 	LocalType type = g_type;
-	//TODO: handle security level
-	uint8_t security_level = g_security_level;
+	sectype security = g_sectype;
+	g_sectype = SECURITY_MIN; //used up the security type, reset
 
 	// Eat the type and get variable name
 	get_next_tok();
@@ -1519,8 +1668,7 @@ static std::unique_ptr<ExprAST> parse_var_expr() {
 	get_next_tok();
 
 	return std::make_unique<LocalVariableExprAST>(
-		//TODO: consider removing last parameter
-		g_type, var_name, security_level
+		g_type, var_name, security
 	);
 }
 
@@ -1579,7 +1727,7 @@ static std::unique_ptr<ExprAST> parse_primary() {
 	case '(':
 		return parse_paren_expr();
 	case tok_var:
-		return parse_var_expr(); //function undefined currently. Should handle variable declaration
+		return parse_var_expr();
 	case '{':
 		return parse_scoped_block();
 	case tok_if:
@@ -1734,7 +1882,8 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 	}
 
 	LocalType type = g_type;
-	uint8_t security_level = 69; //TODO security levels
+	sectype fn_security = g_sectype;
+	g_sectype = SECURITY_MIN; //used security type, reset
 
 	// Parsing the identifier of the function
 	get_next_tok();
@@ -1752,10 +1901,13 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 	std::map<std::string, NameKeywords> arg_types;
 	while (true) {
 		//* Dealing with types of variables in function prototype
-		if (get_next_tok() != tok_var) {
-			break;	
+		get_next_tok();
+		if (g_cur_tok != tok_var) {
+			break;
 		}
 		LocalType arg_type = g_type_map[g_identifier_str];
+		sectype security = g_sectype;
+		g_sectype = SECURITY_MIN; //used security type, reset
 		if (get_next_tok() != tok_identifier) {
 			return log_syntax_error_p("Variable name was not specified");
 		}
@@ -1764,7 +1916,7 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 		nk.type = arg_type;
 		nk.is_fun = false;
 		nk.scope = g_scope + 1;
-		nk.security = 69; //TODO security
+		nk.security = security;
 		arg_types[g_identifier_str] = nk;
 
 		// Adding to `g_var_names`
@@ -1780,17 +1932,13 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 		}
 	}
 	
-	// while (get_next_tok() == tok_identifier)
-	// 	arg_names.push_back(g_identifier_str);
-	//! I think this does not support having math operations in the arguments
-	//! of the function as if I have (x + 5) this will raise an error
 	if (g_cur_tok != ')')
 		return log_syntax_error_p("Expected ')' in prototype");
 
 	//success.
 	get_next_tok();  // eat ')'.
 
-	return std::make_unique<PrototypeAST>(type, fn_name, std::move(args), std::move(arg_types), security_level);
+	return std::make_unique<PrototypeAST>(type, fn_name, std::move(args), std::move(arg_types), fn_security);
 }
 
 // parse_function()
@@ -1805,15 +1953,16 @@ static std::unique_ptr<FunctionAST> parse_function() {
 
 	std::unique_ptr<AST::ExprAST> expr = parse_expression();
 
-	// This was moved because we want this to happen after the code generation
-	// flush_vars(); //remove locally defined (scoped) variables from the global variable list
-
 	if (!expr) {
 		return nullptr;
 	}
 
 	if (proto->get_type() != expr->get_type()) {
 		log_compiler_error("Function type does not match return type.");
+		return nullptr;
+	}
+	if (proto->get_security() != expr->get_security()) {
+		log_compiler_error("Function security does not match return security.");
 		return nullptr;
 	}
 
@@ -1840,12 +1989,13 @@ static std::unique_ptr<PrototypeAST> parse_extern() {
 
 static std::unique_ptr<FunctionAST> parse_top_level_expression() {
 	/// toplevelexpr := expression
-	uint8_t security_level = 69; //TODO security level
+	sectype security = g_sectype;
+	// We DO NOT set g_sectype = SECURITY_MIN since a top-level expression starting with a sectype needs that type.
 	if (auto expr = parse_expression()) {
 		// Make an anonymous proto.
 		auto proto = std::make_unique<PrototypeAST>(
 			expr->get_type(), "", std::vector<std::string>(),
-			std::map<std::string, NameKeywords>(), security_level
+			std::map<std::string, NameKeywords>(), security
 		);
 		return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
 	}
@@ -1913,8 +2063,6 @@ static void parse_file() {
 				// TODO: if we want forward definition with prototypes, we edit here
 				handle_extern();
 				break;
-			// Define a top-level (global) variable
-			//case tok_var:
 			default:
 				handle_top_level_expression();
 				break;

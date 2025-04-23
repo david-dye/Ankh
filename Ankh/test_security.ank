@@ -1,0 +1,17 @@
+
+// Security labels are defined as "$XXX", where XXX are digits between 0 and 255, inclusive.
+// A variable that does NOT have a $XXX identifier before its declaration will be assumed public.
+
+$1 int foo( $0 int x ) {
+	$1 int y;
+	y = x + 6;
+	y;
+}
+
+$1 int bar( $0 int x ) {
+	$1 int y;
+	y = x + foo(x);
+	y;
+}
+
+bar(6)

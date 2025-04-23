@@ -21,6 +21,7 @@
   <ItemGroup>
     <ClCompile Include="lexer.cpp" />
     <ClCompile Include="test_assign_var_to_var.ank" />
+    <ClCompile Include="test_security_fail1.ank" />
   </ItemGroup>
   <ItemGroup>
     <None Include="get_max.ank" />
@@ -46,6 +47,7 @@
     <None Include="test_same_name_variable_different_context.ank" />
     <None Include="test_scope.ank" />
     <None Include="test_scratch.ank" />
+    <None Include="test_security.ank" />
     <None Include="test_var_definition.ank" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
