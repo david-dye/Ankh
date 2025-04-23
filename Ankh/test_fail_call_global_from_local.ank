@@ -1,0 +1,9 @@
+//you cannot define global variables
+
+int x;
+x = 10;
+int f(int y) {
+    x*y;
+}
+f(4);
+

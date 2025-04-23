@@ -1,5 +1,8 @@
-int foo(int y) {
-int x;
-x = 10;
-x * y;
+
+int foo(int x) {
+int y;
+y = x;
+
+int z;
+z = y;
 }

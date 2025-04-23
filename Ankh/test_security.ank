@@ -1,6 +1,13 @@
 
+// IMPORTANT ABOUT SECURITY
+
 // Security labels are defined as "$XXX", where XXX are digits between 0 and 255, inclusive.
+
 // A variable that does NOT have a $XXX identifier before its declaration will be assumed public.
+
+// Public variables have security level 0; i.e. $0.
+
+// It is sufficient to just use $0 and $1 to define low and high security levels
 
 $1 int foo( $0 int x ) {
 	$1 int y;

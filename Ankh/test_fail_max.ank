@@ -1,0 +1,9 @@
+
+// It is not possible to get the maximum value of a secret value and a public value,
+// or two secret values. Doing so would require branching on a secret.
+
+$1 int max_secret(int x, $1 int y) {
+	$1 int ret;
+	ret = if (x > y) {x} else {y};
+	ret;
+}

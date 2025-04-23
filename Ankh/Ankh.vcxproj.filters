@@ -18,12 +18,6 @@
     <ClCompile Include="lexer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="test_assign_var_to_var.ank">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="test_security_fail1.ank">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="test_ops.ank" />
@@ -38,18 +32,19 @@
     <None Include="test_binop_with_different_types.ank" />
     <None Include="test_bool_with_different_types.ank" />
     <None Include="test_call_global_from_local.ank" />
-    <None Include="test_call_global_from_local2.ank" />
+    <None Include="test_fail_call_global_from_local.ank" />
     <None Include="test_declare.ank" />
-    <None Include="test_declare_top_level.ank" />
     <None Include="test_extern_and_function_definition.ank" />
     <None Include="test_fail_assign.ank" />
     <None Include="test_fail_out_of_scope.ank" />
     <None Include="test_optimization.ank" />
     <None Include="test_parsing_numbers_types.ank" />
     <None Include="test_same_name_variable_different_context.ank" />
-    <None Include="test_scratch.ank" />
-    <None Include="test_var_definition.ank" />
-    <None Include="test_assign_var_to_var_fail.ank" />
+    <None Include="test_fail_assign_var_to_var.ank" />
     <None Include="test_security.ank" />
+    <None Include="test_fail_security2.ank" />
+    <None Include="test_fail_security1.ank" />
+    <None Include="test_assign_var_to_var.ank" />
+    <None Include="test_fail_max.ank" />
   </ItemGroup>
 </Project>

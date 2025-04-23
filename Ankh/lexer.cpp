@@ -457,7 +457,9 @@ namespace AST {
 
 	Value* VariableExprAST::codegen() {
 		//assumes the variable has already been emitted somewhere and its value is available.
-		AllocaInst* alloca = g_named_values[name].alloca;
+		AllocaProperties props = g_named_values[name];
+
+		AllocaInst* alloca = props.alloca;
 
 		if (!alloca) {
 			return log_compiler_error("Unknown variable name");
@@ -771,12 +773,12 @@ namespace AST {
 
 		Value* val = rhs->codegen();
 		if (!val) {
-			return log_compiler_error("Invalid assignment: unable to parse right-hand-side value");
+			return log_compiler_error("Invalid assignment: unable to parse right-hand-side value of assignment.");
 		}
 
 		Value* variable = g_named_values[lhse->get_name()].alloca;
 		if (!variable) {
-			return log_compiler_error("assignment for undefined variable");
+			return log_compiler_error("Assignment for undefined variable.");
 		}
 		
 		llvm::AllocaInst* allocaInst = llvm::dyn_cast<llvm::AllocaInst>(variable);
@@ -1142,9 +1144,9 @@ namespace AST {
 			verifyFunction(*f);
 
 			// Optimize the function if necessary
-			//if (!g_disable_function_optimization) {
-			//	g_fpm->run(*f, *g_fam);
-			//}
+			if (!g_disable_function_optimization) {
+				g_fpm->run(*f, *g_fam);
+			}
 
 			return f;
 		}
@@ -1646,6 +1648,12 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 }
 
 static std::unique_ptr<ExprAST> parse_var_expr() {
+
+	if (g_scope == 0) {
+		get_next_tok();
+		return log_syntax_error("Scope must be nonzero to define a variable.");
+	}
+
 	// Determine type of variable
 	if (g_cur_tok != tok_var) {
 		return log_syntax_error_p(
@@ -1663,6 +1671,7 @@ static std::unique_ptr<ExprAST> parse_var_expr() {
 	// Eat the type and get variable name
 	get_next_tok();
 	std::string var_name = g_identifier_str;
+	std::cout << var_name << std::endl;
 
 	// Eat the variable name
 	get_next_tok();
@@ -1675,6 +1684,13 @@ static std::unique_ptr<ExprAST> parse_var_expr() {
 // parse_conditional_expr()
 //	Parses an if statement, in the form: conditional expr ::= if condition {} else {}
 static std::unique_ptr<ExprAST> parse_conditional_expr() {
+
+
+	if (g_scope == 0) {
+		get_next_tok();
+		return log_syntax_error("Scope must be nonzero to define an if statement.");
+	}
+
 	get_next_tok();  // eat the if.
 
 	// condition.
@@ -1988,6 +2004,10 @@ static std::unique_ptr<PrototypeAST> parse_extern() {
 }
 
 static std::unique_ptr<FunctionAST> parse_top_level_expression() {
+	if (g_scope != 0) {
+		log_compiler_error("Scope was unexpectedly nonzero for a top level expression.");
+		return nullptr;
+	}
 	/// toplevelexpr := expression
 	sectype security = g_sectype;
 	// We DO NOT set g_sectype = SECURITY_MIN since a top-level expression starting with a sectype needs that type.

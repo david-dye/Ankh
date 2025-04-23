@@ -1,0 +1,19 @@
+
+$1 int foo( $0 int x ) {
+	$1 int y;
+	y = x + 6;
+	y;
+}
+
+$1 int bar( $0 int x ) {
+	//take x and cast it to a higher security level. This is valid!
+	$1 int z;
+	z = x + 0;
+
+	$1 int y;
+	//should fail since z is high and foo takes low input
+	y = x + foo(z);
+	y;
+}
+
+bar(6)

@@ -1,1 +1,11 @@
+
+//why is this expected behavior? This is weird... we shouldn't be able to assign values to arguments.
 int foo(int x)  x = 10;
+
+
+//here's a different assignment test: a function that converts an integer to a double
+double bar(int x) {
+	double y;
+	y = x + 0.;
+	y;
+}

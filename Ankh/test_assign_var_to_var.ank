@@ -1,4 +1,5 @@
 
+
 double bar(int x) {
 	//we can assign x to y by typecasting x to a double.
 	double y;
@@ -6,10 +7,22 @@ double bar(int x) {
 	y;
 }
 
-int bat() {
+
+//you can see that this just optimizes away everything and returns 7
+int seven() {
 	int x;
 	int y;
 	x = 7;
 	y = x;
 	y;
 }
+
+//without optimizations, there are a bunch of stores and loads
+int no_opt seven_no_opt() {
+	int x;
+	int y;
+	x = 7;
+	y = x;
+	y;
+}
+

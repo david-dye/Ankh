@@ -1,6 +1,0 @@
-
-int foo(double x) {
-	int y;
-	y = x;
-	y;
-}

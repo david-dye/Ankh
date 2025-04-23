@@ -6,4 +6,4 @@ double funk (
 	x + y;
 }
 
-funk(6, 3);
+funk(6, 3.);
