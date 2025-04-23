@@ -1,0 +1,15 @@
+
+double bar(int x) {
+	//we can assign x to y by typecasting x to a double.
+	double y;
+	y = x + 0.;
+	y;
+}
+
+int bat() {
+	int x;
+	int y;
+	x = 7;
+	y = x;
+	y;
+}

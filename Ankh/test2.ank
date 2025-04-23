@@ -1,8 +1,0 @@
-
-//this is intended to verify correctness of lexer.cpp for the Kaleidoscope documentation.
-
-extern cos(x); //external declaration
-
-def foo(x) cos(x); //function definition using declared function
-
-7 * 3 / 2; //top-level expression

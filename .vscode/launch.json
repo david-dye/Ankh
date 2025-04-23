@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "lldb",
+      "request": "launch",
+      "args": [],
+      "cwd": "/Users/aghyaddeeb/Documents/coding/cs2540/project/Ankh",
+      "program": "/Users/aghyaddeeb/Documents/coding/cs2540/project/Ankh/build/Debug/outDebug"
+    }
+  ]
+}

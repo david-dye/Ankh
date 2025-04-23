@@ -1,2 +1,3 @@
 int optimized(int x) (1+2+x)*(x+(1+2));
 int no_opt non_optimized(int x) (1+2+x)*(x+(1+2));
+int optimized2(int x) (1+2+x)*(x+(1+2));

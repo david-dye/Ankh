@@ -1,0 +1,6 @@
+int x;
+x = 10;
+int f(int y) {
+    x;
+}
+f(4);

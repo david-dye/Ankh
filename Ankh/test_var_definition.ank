@@ -1,0 +1,18 @@
+
+//this is a comment
+
+//how to define a function
+int foo() {
+
+	int x;
+
+	int z = 7;
+
+}
+
+
+//the following code throws a syntax error on double decimal
+40.0.0
+
+//the following code throws a syntax error on unknown symbol
+#

@@ -6,8 +6,10 @@
 #include <cstdio>
 #include <vector>
 #include <map>
+#include <cstdarg>
 
 #pragma warning(push, 0) //these headers have a million warnings (sloppily written?)
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
@@ -28,14 +30,36 @@
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 #pragma warning(pop) //stop hiding warnings for *our* code
+
+//TODO: When implementing control flow, make sure to use code form chapter 7
+//TODO: this includes ForExprAST::codegen()
+
+//#define DEBUG
+
+#ifdef DEBUG
+void debug_log(const char* format, ...) {
+	va_list args;
+	va_start(args, format);
+	vprintf(format, args);
+	va_end(args);
+}
+
+#endif
+
+#ifndef DEBUG
+void debug_log(const char* format, ...) {
+	(void) format;
+}
+#endif
+
 
 #ifndef isascii
 static unsigned int isascii(unsigned int ch) {
 	return (ch < 128);
 }
 #endif
-
 
 uint8_t constexpr SECURITY_MIN = 0;
 uint8_t constexpr SECURITY_MAX = UINT8_MAX;
@@ -100,6 +124,7 @@ static bool g_disable_function_optimization;
 static std::string g_number_str;		// Filled in for tok_num, stored as string to enable infinite precision
 static bool g_number_has_period; 		// Helps distinguish between floats and ints
 static LocalType g_type = type_unsupported;	// Used when a variable or function is defined
+static uint8_t g_security_level = SECURITY_MIN;
 
 
 //contains everything you could possibly want to know about a name.
@@ -115,14 +140,32 @@ static std::map<std::string, NameKeywords> g_var_names; //variable names and inf
 static std::map<std::string, NameKeywords> g_fun_names; //function names and info
 static uint8_t g_scope = 0; //the current operating scope. 0 is global
 
+struct AllocaProperties {
+	AllocaInst* alloca;
+	uint8_t scope = 0; //default is global scope
+	LocalType type = type_unsupported;
+	Value* val;
+};
+
+void print_map_keys(std::map<std::string, NameKeywords> mp) {
+	printf("printing map: \n");
+	for (auto it = mp.begin(); it != mp.end(); ++it) {
+		printf("\tit->first: %s\n", it->first.c_str());
+	}
+}
+
+void print_map_keys(std::map<std::string, AllocaProperties> mp) {
+	printf("printing map: \n");
+	for (auto it = mp.begin(); it != mp.end(); ++it) {
+		printf("\tit->first: %s\n", it->first.c_str());
+	}
+}
 
 //global variables for creating LLVM bytecode
 static std::unique_ptr<LLVMContext> g_llvm_context;
 static std::unique_ptr<IRBuilder<>> g_builder;
 static std::unique_ptr<Module> g_module;
-static std::map<std::string, Value*> g_named_values;
-// //! Needs to be imported from another file
-// static std::unique_ptr<KaleidoscopeJIT> g_jit;
+static std::map<std::string, AllocaProperties> g_named_values;
 static std::unique_ptr<FunctionPassManager> g_fpm;
 static std::unique_ptr<LoopAnalysisManager> g_lam;
 static std::unique_ptr<FunctionAnalysisManager> g_fam;
@@ -159,8 +202,9 @@ static void initialize_llvm_module() {
 	);
 	g_si->registerCallbacks(*g_pic, g_mam.get());
 
-	//TODO: check if these affect the code 
 	// Add transform passes.
+	// promote allocas to registers 
+	g_fpm->addPass(PromotePass());
 	// Do simple "peephole" optimizations and bit-twiddling optzns.
 	g_fpm->addPass(InstCombinePass());
 	// Reassociate expressions.
@@ -168,7 +212,6 @@ static void initialize_llvm_module() {
 	// Eliminate Common SubExpressions.
 	g_fpm->addPass(GVNPass());
 	// Simplify the control flow graph (deleting unreachable blocks, etc).
-	//TODO: this one looks sus
 	g_fpm->addPass(SimplifyCFGPass());
 
 	// Register analysis passes used in these transform passes.
@@ -206,6 +249,18 @@ static void flush_vars() {
 	}
 }
 
+// Removes variables from `g_named_values` with scope higher than `cur_scope`.
+static void flush_named_values_map(uint8_t cur_scope) {
+	for (auto it = g_named_values.begin(); it != g_named_values.end(); ) {
+		if (it->second.scope > g_scope) {
+			it = g_named_values.erase(it);
+		}
+		else {
+			++it;
+		}
+	}
+}
+
 // Checks whether a name is already being used for another variable
 static bool is_named_var(std::string& name) {
 	if (g_var_names.find(name) == g_var_names.end()) {
@@ -233,6 +288,7 @@ static bool is_named(std::string& name) {
 //======================================================================================================
 // Abstract Syntax Tree (AST)
 //======================================================================================================
+
 namespace AST {
 
 	static Type* local_type_to_llvm(LocalType type) {
@@ -253,6 +309,32 @@ namespace AST {
 				break;
 		}
 	}
+
+
+	// get_default_type_value(type)
+	//	Gets the default type for all supported types. Generally this is 0.
+	static Value* get_default_type_value(Type* type) {
+		if (type->isIntegerTy()) {
+			return ConstantInt::get(type, 0);
+		}
+		else if (type->isFloatingPointTy()) {
+			return ConstantFP::get(type, 0.0);
+		}
+		log_compiler_error("Unsupported type for default else value");
+		return nullptr;
+	}
+
+	/// create_entry_block_alloca - Create an alloca instruction in the entry block of
+	/// the function.  This is used for mutable variables etc.
+	static AllocaInst* create_entry_block_alloca(
+		Function* f, StringRef var_name, Type* type
+	) {
+		IRBuilder<> temp_builder(
+				&f->getEntryBlock(), f->getEntryBlock().begin()
+		);
+		return temp_builder.CreateAlloca(type, nullptr, var_name);
+	}
+
 	// ExprAST - Base class for all expression nodes.
 	class ExprAST {
 		LocalType type;
@@ -286,7 +368,7 @@ namespace AST {
 		int32_t val;
 
 	public:
-		IntegerAST(const LocalType type, int32_t val) : ExprAST(type), val(val) {} //! If we know that the type is integer, why do we pass the type as an argument?
+		IntegerAST(const LocalType type, int32_t val) : ExprAST(type), val(val) {} 
 		Value* codegen() override;
 	};
 
@@ -313,10 +395,11 @@ namespace AST {
 	class VariableExprAST : public ExprAST {
 		std::string name;
 		uint8_t security_level;
+		uint8_t scope;
 
 	public:
-		VariableExprAST(const LocalType type, const std::string& name, const uint8_t security_level, bool new_var) 
-			: ExprAST(type), name(name), security_level(security_level) {
+		VariableExprAST(const LocalType type, const std::string& name, const uint8_t security_level, bool new_var, uint8_t scope) 
+			: ExprAST(type), name(name), security_level(security_level), scope(scope) {
 			if (!new_var) {
 				//no need to do anything for a variable already defined
 				return;
@@ -325,24 +408,77 @@ namespace AST {
 			//add new variable to the global names map at the current scope
 			NameKeywords nk;
 			nk.is_fun = false;
+			// g_scope is the current scope the code is in
 			nk.scope = g_scope;
 			nk.security = security_level;
 			nk.type = type;
 			g_var_names[name] = nk;
 		}
 		Value* codegen() override;
+		std::string get_name() {
+			return name;
+		}
 	};
 
 
 	Value* VariableExprAST::codegen() {
 		//assumes the variable has already been emitted somewhere and its value is available.
-		Value* V = g_named_values[name];
+		AllocaInst* alloca = g_named_values[name].alloca;
 
-
-		if (!V) {
-			log_compiler_error("Unknown variable name");
+		if (!alloca) {
+			return log_compiler_error("Unknown variable name");
 		}
-		return V;
+
+		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
+	
+		loaded_value->print(llvm::outs());
+
+		return loaded_value;
+	}
+
+	class LocalVariableExprAST : public ExprAST {
+		std::string name;
+		uint8_t security_level;
+		uint8_t scope;
+
+	public:
+		LocalVariableExprAST(const LocalType type, const std::string& name, const uint8_t security_level) 
+			: ExprAST(type), name(name), security_level(security_level) {
+
+			//add new variable to the global names map at the current scope
+			NameKeywords nk;
+			nk.is_fun = false;
+			// g_scope is the current scope the code is in
+			nk.scope = g_scope;
+			nk.security = security_level;
+			nk.type = type;
+			g_var_names[name] = nk;
+
+			scope = g_scope;
+		}
+
+		Value* codegen() override;
+
+		std::string get_name() {
+			return name;
+		}
+	};
+
+	Value* LocalVariableExprAST::codegen() {
+		Function* fun = g_builder->GetInsertBlock()->getParent();
+		Type* llvm_type = local_type_to_llvm(get_type());
+		AllocaInst* alloca = create_entry_block_alloca(fun, name, llvm_type);
+		Value* default_val = get_default_type_value(llvm_type);
+		g_builder->CreateStore(default_val, alloca);
+
+		AllocaProperties alloca_prop;
+		alloca_prop.alloca = alloca;
+		alloca_prop.scope = scope;
+		alloca_prop.type = get_type();
+		alloca_prop.val = default_val;
+		g_named_values[name] = alloca_prop;
+
+		return default_val;
 	}
 
 	class IfExprAST : public ExprAST {
@@ -472,6 +608,7 @@ namespace AST {
 		Value* codegen_sub(Value* L, Value* R, LocalType type);
 		Value* codegen_mul(Value* L, Value* R, LocalType type);
 		Value* codegen_div(Value* L, Value* R, LocalType type);
+		Value* codegen_assign();
 		Value* codegen() override;
 	}; 
 
@@ -552,8 +689,78 @@ namespace AST {
 		}
 	}
 
+	Value* BinaryExprAST::codegen_assign() {
+		VariableExprAST* lhse = static_cast<VariableExprAST*>(lhs.get());
+		if (!lhse) {
+			return log_compiler_error(
+				"destination of '=' must be a variable"
+			);
+		}
+
+		Value* val = rhs->codegen();
+		if (!val) {
+			return log_compiler_error("Invalid assignment: unable to parse right-hand-side value");
+		}
+
+		Value* variable = g_named_values[lhse->get_name()].alloca;
+		if (!variable) {
+			return log_compiler_error("assignment for undefined variable");
+		}
+		
+		llvm::AllocaInst* allocaInst = llvm::dyn_cast<llvm::AllocaInst>(variable);
+		if (!allocaInst) {
+			return log_compiler_error("Variable was not correctly created using alloca.");
+		}
+
+		llvm::Type* var_type = allocaInst->getAllocatedType();
+
+		if (!(var_type->isIntegerTy()) && !(var_type->isFloatingPointTy())) {
+			return log_compiler_error("Invalid assignment: variable is not a valid type.");
+		}
+
+		if (!(val->getType()->isIntegerTy()) && !(val->getType()->isFloatingPointTy())) {
+			return log_compiler_error("Invalid assignment: value is not a valid type.");
+		}
+
+		if (
+			(var_type->isIntegerTy() && !(val->getType()->isIntegerTy())) ||
+			(var_type->isFloatingPointTy() && !(val->getType()->isFloatingPointTy()))
+		) {
+			return log_compiler_error("Invalid assignment: type of value is different from type of variable.");
+		}
+
+		// Removed this as `g_var_names` as the variables may be flushed at this
+		// point
+		// // ensure the variable is in local store
+		// if (g_var_names.find(lhse->get_name()) == g_var_names.end()) {
+		// 	return log_compiler_error(
+		// 		"variable found in `g_named_values` but not in `g_var_names`"
+		// 	);
+		// }
+
+		// NameKeywords nk = g_var_names[lhse->get_name()];
+
+		// LocalType type_rhs = rhs->get_type();
+
+		// if (nk.type != type_rhs) {
+		// 	return log_compiler_error(
+		// 		"assigned value type is different from variable type"
+		// 	);
+		// }
+
+
+		g_builder->CreateStore(val, variable);
+		g_named_values[lhse->get_name()].val = val;
+		return val;
+	}
+
 	
 	Value* BinaryExprAST::codegen() {
+		// Deal with assignment as a special case since we don't want to emit
+		// LHS as an expression.
+		if (op == '=') {
+			return codegen_assign();
+		}
 		//L and R **MUST** have the same type OR we must do type conversions
 		LocalType type_lhs = lhs->get_type();
 		LocalType type_rhs = rhs->get_type();
@@ -671,6 +878,7 @@ namespace AST {
 		std::vector<std::string> args; //this will likely need to contain more than just the name of arguments
 		std::map<std::string, NameKeywords> arg_types;
 		uint8_t security_level;
+		uint8_t scope;
 
 	public:
 		PrototypeAST(
@@ -699,6 +907,7 @@ namespace AST {
 			}
 
 			this->arg_types = std::move(arg_types);
+			scope = g_scope;
 		}
 
 		Function* codegen() override;
@@ -707,6 +916,8 @@ namespace AST {
 		const size_t get_nargs() const { return args.size(); }
 		const std::string& get_arg_by_idx(size_t i) const { assert(i < get_nargs()); return args[i]; }
 		const LocalType get_arg_type(std::string& arg) { return arg_types[arg].type; }
+		const uint8_t get_scope() const { return scope; }
+		const uint8_t get_security_level() const { return security_level; }
 	};
 
 	Function* PrototypeAST::codegen() {
@@ -780,19 +991,53 @@ namespace AST {
 		BasicBlock* bb = BasicBlock::Create(*g_llvm_context, "entry", f);
 		g_builder->SetInsertPoint(bb);
 
-		// Record the function arguments in the g_named_values map.
-		g_named_values.clear();
-		for (auto& arg : f->args())
-			g_named_values[std::string(arg.getName())] = &arg;
+		// Remove out of scope variables from `g_named_values`. Out of scope is
+		// determined based on the scope the function is in (as opposed to the 
+		// scope inside the function) which is determined by the scope the 
+		// prototype is in.
+		flush_named_values_map(proto->get_scope());
+
+		// Store the g_named_values in the current block
+		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
+			Type* llvm_type = local_type_to_llvm(it->second.type);
+			AllocaInst* alloca = create_entry_block_alloca(f, it->first, llvm_type);
+			Value* val = it->second.val;
+			g_builder->CreateStore(val, alloca);
+
+			AllocaProperties alloca_prop;
+			alloca_prop.alloca = alloca;
+			alloca_prop.scope = it->second.scope;
+			alloca_prop.type = it->second.type;
+			alloca_prop.val = val;
+			g_named_values[it->first] = alloca_prop;
+		}
+		// Add function arguments to the store 
+		for (auto& arg : f->args()) {
+			//TODO: ensure that the type here works well (is it correct type?)
+			AllocaInst* alloca = create_entry_block_alloca(f, arg.getName(), arg.getType());
+			g_builder->CreateStore(&arg, alloca);
+			
+			AllocaProperties alloca_prop;
+			alloca_prop.alloca = alloca;
+			// The scope inside the function is the scope the function is in + 1
+			alloca_prop.scope = proto->get_scope() + 1;
+			std::string arg_name = arg.getName().str();
+			alloca_prop.type = proto->get_arg_type(arg_name);
+			alloca_prop.val = &arg;
+			g_named_values[std::string(arg.getName())] = alloca_prop;
+		}
 		
 		if (Value* retval = body->codegen()) {
+			retval->print(llvm::outs());
+
 			// Finish off the function.
 			g_builder->CreateRet(retval);
 
 			// Validate the generated code, checking for consistency.
+			llvm::Function* test = f;
+
 			verifyFunction(*f);
 
-			//TODO: add optionality
 			// Optimize the function if necessary
 			if (!g_disable_function_optimization) {
 				g_fpm->run(*f, *g_fam);
@@ -821,10 +1066,12 @@ namespace AST {
 	};
 
 	Value* BlockExprAST::codegen() {
-		//need to add the ability to return early from a block
+		//TODO: need to add the ability to return early from a block
 		Value* last = nullptr;
-		for (auto& expr : body)
+		for (auto& expr : body) {
 			last = expr->codegen();
+		}
+		flush_vars();
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
@@ -844,19 +1091,6 @@ std::unique_ptr<ExprAST> log_syntax_error(const char* str) {
 //	Helper function for error handling. Returns nullptr.
 std::unique_ptr<PrototypeAST> log_syntax_error_p(const char* str) {
 	log_syntax_error(str);
-	return nullptr;
-}
-
-// get_default_type_value(type)
-//	Gets the default type for all supported types. Generally this is 0.
-static Value* get_default_type_value(Type* type) {
-	if (type->isIntegerTy()) {
-		return ConstantInt::get(type, 0);
-	}
-	else if (type->isFloatingPointTy()) {
-		return ConstantFP::get(type, 0.0);
-	}
-	log_compiler_error("Unsupported type for default else value");
 	return nullptr;
 }
 
@@ -906,7 +1140,7 @@ static std::string get_next_identifier(int n = 1) {
 	for (int j = 0; j < n; ++j) {
 		char current_char = g_line[g_line_idx];
 		while (current_char == ' ' || current_char == '\t' || current_char == '\r') {
-			// Eat all alphanumeric characters
+			// Eat all whitespace
 			++i;
 			current_char = g_line[g_line_idx + i];
 		}
@@ -976,6 +1210,20 @@ static int get_tok() {
 		return get_tok();
 	}
 
+	if (g_line[g_line_idx] == '/') {
+		//either a comment or a division
+
+		if (g_line.size() > g_line_idx + 1 && g_line[g_line_idx + 1] == '/') {
+			//comment, ignore rest of line
+			read_line();
+			return get_tok();
+		}
+
+		//division operator
+		++g_line_idx;
+		return '/';
+	}
+
 	if (isalpha(g_line[g_line_idx]) || g_line[g_line_idx] == '_') {
 		//token starts with a letter or an underscore
 		g_identifier_str = g_line[g_line_idx]; 
@@ -1020,6 +1268,8 @@ static int get_tok() {
 			}
 		}
 
+		//! For some reason, having secret in front of int made the parser treat
+		//! int as an identifier.
 		// not a keyword, indicate that g_identifier_str is filled
 		return tok_identifier;
 	}
@@ -1055,22 +1305,6 @@ static int get_tok() {
 		return tok_num;
 	}
 
-	if (g_line[g_line_idx] == '/') {
-		//either a comment or a division
-
-		if (g_line.size() > g_line_idx + 1 && g_line[g_line_idx + 1] == '/') {
-			//comment, ignore rest of line
-			read_line();
-			return get_tok();
-		}
-
-		//division operator
-		++g_line_idx;
-		//! Interesting. so if we have a line with just / we will consider it a
-		//! division operator. This kinda makes sense.
-		return '/';
-	}
-
 	//special or unknown character, such as a binary operator or paretheses
 	++g_line_idx;
 	return g_line[g_line_idx - 1];
@@ -1094,6 +1328,10 @@ static int get_next_tok() {
 	g_prev_tok = g_cur_tok;
 	g_prev_identifier_str = g_identifier_str;
 	g_cur_tok = get_tok();
+	debug_log(
+		"`get_next_tok`. g_cur_tok: %i,\n \t\tg_identifier_str: %s\n",
+		g_cur_tok, g_identifier_str.c_str()
+	);
 	return g_cur_tok;
 }
 
@@ -1161,6 +1399,7 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 
 	std::string id_name = g_identifier_str; // Set by lexer
 	LocalType type = g_type;
+	//! To deal with this we need to make the lexer parse security levels
 	uint8_t security_level = 69; //TODO security levels
 
 	get_next_tok();  //eat identifier.
@@ -1169,11 +1408,13 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 	if (g_cur_tok != '(') {
 		// The identifier is a variable name. If it is not already defined, then its type is g_type
 		bool new_var = true; //whether the identifier is new or already defined
+		uint8_t scope = g_scope;
 		if (is_named_var(id_name)) {
 			type = g_var_names[id_name].type;
 			new_var = false;
+			scope = g_var_names[id_name].scope;
 		}
-		return std::make_unique<VariableExprAST>(type, id_name, security_level, new_var); 
+		return std::make_unique<VariableExprAST>(type, id_name, security_level, new_var, scope); 
 	}
 
 	// The identifier is a function name. If it is not already defined, then its type is g_type
@@ -1237,15 +1478,50 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 	get_next_tok();
 	--g_scope;
 
-	flush_vars();
-
+	
 	if (exprs.size() == 0) {
 		//no expressions were generated
 		return nullptr;
 	}
 
+	// Note: `flush_vars()` and `g_var_names` should only be used when parsing
+	// and using it in `codegen` can cause unexpected behavior
+	std::unique_ptr<BlockExprAST> block_code = std::make_unique<BlockExprAST>(
+		exprs.back()->get_type(), std::move(exprs)
+	);
+
+	flush_vars();
+
 	//the type of the block is the type of its return. CURRENTLY that is the final expression.
-	return std::make_unique<BlockExprAST>(exprs.back()->get_type(), std::move(exprs));
+	return block_code;
+}
+
+static std::unique_ptr<ExprAST> parse_var_expr() {
+	// Determine type of variable
+	if (g_cur_tok != tok_var) {
+		return log_syntax_error_p(
+			"Expected variable type in variable definition"
+		);
+	}
+	if (g_type_map.find(g_identifier_str) == g_type_map.end()) {
+		return log_syntax_error_p("Unsupported variable type");
+	}
+
+	LocalType type = g_type;
+	//TODO: handle security level
+	uint8_t security_level = g_security_level;
+
+	// Eat the type and get variable name
+	get_next_tok();
+	std::string var_name = g_identifier_str;
+
+	// Eat the variable name
+	get_next_tok();
+
+	return std::make_unique<LocalVariableExprAST>(
+		//TODO: consider removing last parameter
+		g_type, var_name, security_level
+	);
 }
 
 // parse_conditional_expr()
@@ -1302,8 +1578,8 @@ static std::unique_ptr<ExprAST> parse_primary() {
 		return parse_num_expr();
 	case '(':
 		return parse_paren_expr();
-	//case tok_var:
-	//	return parse_var_expr(); //function undefined currently. Should handle variable declaration
+	case tok_var:
+		return parse_var_expr(); //function undefined currently. Should handle variable declaration
 	case '{':
 		return parse_scoped_block();
 	case tok_if:
@@ -1313,24 +1589,25 @@ static std::unique_ptr<ExprAST> parse_primary() {
 		get_next_tok(); //eat ';'
 		return nullptr;
 	default:
+
 		return log_syntax_error("unknown token when expecting an expression");
 	}
 }
 
 //mapping from binary operator to precedence value
-//! Maybe do a g_binop_precedence?
-static std::map<char, int> binop_precedence;
+static std::map<char, int> g_binop_precedence;
 
 // set_binop_precedence()
 //	Sets the precedence of all binary operators, such as +, -, *, and /.
 static void set_binop_precedence() {
 	//higher precedence is performed first
-	binop_precedence['<'] = 10;
-	binop_precedence['>'] = 10;
-	binop_precedence['+'] = 20;
-	binop_precedence['-'] = 20;
-	binop_precedence['*'] = 40;
-	binop_precedence['/'] = 40;
+	g_binop_precedence['='] = 2;
+	g_binop_precedence['<'] = 10;
+	g_binop_precedence['>'] = 10;
+	g_binop_precedence['+'] = 20;
+	g_binop_precedence['-'] = 20;
+	g_binop_precedence['*'] = 40;
+	g_binop_precedence['/'] = 40;
 }
 
 
@@ -1341,13 +1618,13 @@ static int get_tok_precedence() {
 		return -1;
 	}
 
-	if (binop_precedence.empty()) {
+	if (g_binop_precedence.empty()) {
 		set_binop_precedence();
 	}
 
 	// Will automatically deal with invalid tokens because they're not in the
 	// map
-	int tok_prec = binop_precedence[g_cur_tok];
+	int tok_prec = g_binop_precedence[g_cur_tok];
 	if (tok_prec <= 0) {
 		//undefined operator
 		return -1;
@@ -1490,6 +1767,10 @@ static std::unique_ptr<PrototypeAST> parse_prototype() {
 		nk.security = 69; //TODO security
 		arg_types[g_identifier_str] = nk;
 
+		// Adding to `g_var_names`
+		NameKeywords nk_copy = nk;
+		g_var_names[g_identifier_str] = nk_copy;
+
 		int next_tok = get_next_tok();
 		if (next_tok == ')') {
 			break;
@@ -1523,7 +1804,9 @@ static std::unique_ptr<FunctionAST> parse_function() {
 	}
 
 	std::unique_ptr<AST::ExprAST> expr = parse_expression();
-	flush_vars(); //remove locally defined (scoped) variables from the global variable list
+
+	// This was moved because we want this to happen after the code generation
+	// flush_vars(); //remove locally defined (scoped) variables from the global variable list
 
 	if (!expr) {
 		return nullptr;
@@ -1534,7 +1817,13 @@ static std::unique_ptr<FunctionAST> parse_function() {
 		return nullptr;
 	}
 
-	return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
+	std::unique_ptr<FunctionAST> fun_code = std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
+
+	// Moved inside the codegen as we want the variables to be availble 
+	// inside the codegen
+	flush_vars();
+
+	return fun_code;
 }
 
 // parse_extern()
@@ -1614,12 +1903,10 @@ static void parse_file() {
 			case tok_eof:
 				return;
 			case ';': // ignore top-level semicolons.
-				//! Not sure if we want to ignore for C-style code?
-				//! Maybe yes because we eat whitespace anyway
 				get_next_tok();
 				break;
 			// For defining function
-			case tok_fun: //! was tok_def
+			case tok_fun:
 				handle_function();
 				break;
 			case tok_extern:
@@ -1638,6 +1925,7 @@ static void parse_file() {
 
 
 int main(int argc, char** argv) {
+	debug_log("Debug log is active");
 	if (argc != 2) {
 		fprintf(stderr, "Usage: No .ank file provided to lexer.\n");
 		return 1;

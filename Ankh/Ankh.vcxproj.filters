@@ -18,15 +18,34 @@
     <ClCompile Include="lexer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="test_assign_var_to_var.ank">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="test1.ank" />
-    <None Include="test2.ank" />
-    <None Include="test3.ank" />
     <None Include="test_ops.ank" />
     <None Include="test_blocks.ank" />
     <None Include="test_scope.ank" />
     <None Include="test_if.ank" />
     <None Include="get_max.ank" />
+    <None Include="test_functions_with_types.ank" />
+    <None Include="test_function_return.ank" />
+    <None Include="test_fail_wrong_argument_type.ank" />
+    <None Include="test_assign.ank" />
+    <None Include="test_binop_with_different_types.ank" />
+    <None Include="test_bool_with_different_types.ank" />
+    <None Include="test_call_global_from_local.ank" />
+    <None Include="test_call_global_from_local2.ank" />
+    <None Include="test_declare.ank" />
+    <None Include="test_declare_top_level.ank" />
+    <None Include="test_extern_and_function_definition.ank" />
+    <None Include="test_fail_assign.ank" />
+    <None Include="test_fail_out_of_scope.ank" />
+    <None Include="test_optimization.ank" />
+    <None Include="test_parsing_numbers_types.ank" />
+    <None Include="test_same_name_variable_different_context.ank" />
+    <None Include="test_scratch.ank" />
+    <None Include="test_var_definition.ank" />
+    <None Include="test_assign_var_to_var_fail.ank" />
   </ItemGroup>
 </Project>

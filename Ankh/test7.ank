@@ -1,2 +1,0 @@
-double foo(int a , double b) a*a + 2*a*b + b*b;
-foo(5, 1);
