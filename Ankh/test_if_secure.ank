@@ -1,0 +1,15 @@
+
+
+$1 int foo(int x) {
+	$1 int y;
+
+	if (x) {
+		y = x;
+	} 
+	else {
+		y = 7;
+	}
+
+	y;
+}
+

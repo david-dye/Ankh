@@ -40,6 +40,7 @@
     <None Include="test_functions_with_types.ank" />
     <None Include="test_function_return.ank" />
     <None Include="test_if.ank" />
+    <None Include="test_if_secure.ank" />
     <None Include="test_ops.ank" />
     <None Include="test_optimization.ank" />
     <None Include="test_parsing_numbers_types.ank" />

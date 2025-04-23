@@ -46,5 +46,6 @@
     <None Include="test_fail_security1.ank" />
     <None Include="test_assign_var_to_var.ank" />
     <None Include="test_fail_max.ank" />
+    <None Include="test_if_secure.ank" />
   </ItemGroup>
 </Project>
