@@ -29,7 +29,8 @@ C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.3443
           ]
   
   Generating code
-  Previous IPDB and IOBJ mismatch, fall back to full compilation.
-  All 4021 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  10 of 4022 functions ( 0.2%) were compiled, the rest were copied from previous compilation.
+    3 functions were new in current compilation
+    49 functions had inline decision re-evaluated but remain unchanged
   Finished generating code
   Ankh.vcxproj -> C:\Users\dwdjr\source\repos\Ankh\Ankh\Ankh.exe

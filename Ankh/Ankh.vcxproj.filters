@@ -52,5 +52,6 @@
     <None Include="call_global_from_local.ank" />
     <None Include="test_while.ank" />
     <None Include="test_fail_while.ank" />
+    <None Include="mod_exp.ank" />
   </ItemGroup>
 </Project>
