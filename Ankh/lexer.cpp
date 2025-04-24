@@ -42,7 +42,7 @@
 //TODO: When implementing control flow, make sure to use code form chapter 7
 //TODO: this includes ForExprAST::codegen()
 
-//#define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
 void debug_log(const char* format, ...) {
@@ -463,7 +463,11 @@ namespace AST {
 
 	Value* VariableExprAST::codegen() {
 		//assumes the variable has already been emitted somewhere and its value is available.
+		debug_log("just enterd var codeg\n");
+		print_map_keys(g_named_values);
 		AllocaProperties props = g_named_values[name];
+		print_map_keys(g_named_values);
+		debug_log("after accessing name in g_named_values\n");
 
 		AllocaInst* alloca = props.alloca;
 
@@ -473,7 +477,9 @@ namespace AST {
 
 		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
 	
-		//loaded_value->print(llvm::outs());
+		debug_log("printing loaded value in VariableAST\n");
+		loaded_value->print(llvm::outs());
+		debug_log("after printing loaded value in VariableAST\n");
 
 		return loaded_value;
 	}
@@ -1194,17 +1200,24 @@ namespace AST {
 
 		// Store the g_named_values in the current block
 		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
+			debug_log("just enterd 1st for\n");
 			Type* llvm_type = local_type_to_llvm(it->second.type);
+			debug_log("after 1st line\n");
 			AllocaInst* alloca = create_entry_block_alloca(f, it->first, llvm_type);
+			debug_log("after 2 line\n");
 			Value* val = it->second.val;
+			debug_log("after 3 line\n");
 			g_builder->CreateStore(val, alloca);
+			debug_log("after 4 line\n");
 
 			AllocaProperties alloca_prop;
 			alloca_prop.alloca = alloca;
 			alloca_prop.scope = it->second.scope;
 			alloca_prop.type = it->second.type;
 			alloca_prop.val = val;
+			debug_log("just before assiging in function codge gen 1st if\n");
 			g_named_values[it->first] = alloca_prop;
+			debug_log("just after assiging in function codge gen 1st if\n");
 		}
 		// Add function arguments to the store 
 		for (auto& arg : f->args()) {
@@ -1219,7 +1232,9 @@ namespace AST {
 			std::string arg_name = arg.getName().str();
 			alloca_prop.type = proto->get_arg_type(arg_name);
 			alloca_prop.val = &arg;
+			debug_log("just before assiging in function codge gen 2 if\n");
 			g_named_values[std::string(arg.getName())] = alloca_prop;
+			debug_log("just after assiging in function codge gen 2 if\n");
 		}
 		
 		if (Value* retval = body->codegen()) {
@@ -1673,6 +1688,7 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 			scope = g_var_names[id_name].scope;
 			security = g_var_names[id_name].security;
 		}
+		debug_log("after the if block\n");
 		return std::make_unique<VariableExprAST>(type, id_name, new_var, scope, security); 
 	}
 
@@ -1758,10 +1774,10 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 
 static std::unique_ptr<ExprAST> parse_var_expr() {
 
-	//if (g_scope == 0) {
-	//	get_next_tok();
-	//	return log_syntax_error("Scope must be nonzero to define a variable.");
-	//}
+	// if (g_scope == 0) {
+	// 	get_next_tok();
+	// 	return log_syntax_error("Scope must be nonzero to define a variable.");
+	// }
 
 	// Determine type of variable
 	if (g_cur_tok != tok_var) {
@@ -1892,6 +1908,7 @@ static std::unique_ptr<ExprAST> parse_primary() {
 		return nullptr;
 	default:
 
+		debug_log("g_curr_token: %i\n", g_cur_tok);
 		return log_syntax_error("unknown token when expecting an expression");
 	}
 }
