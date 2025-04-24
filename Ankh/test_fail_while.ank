@@ -1,0 +1,15 @@
+
+// Like an if statement, a while loop is not allowed to branch on secret data.
+
+$1 int no_opt foo() {
+	$1 int x;
+	x = 0;
+
+	while (x < 10) {
+		x = x + 1;
+	}
+
+	x;
+}
+
+foo();
