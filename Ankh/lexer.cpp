@@ -2313,7 +2313,8 @@ int main(int argc, char** argv) {
 	InitializeAllAsmPrinters();
 
 	std::string error;
-	auto target = TargetRegistry::lookupTarget(target_spec, error);
+	llvm::Triple triple(target_spec);
+	auto target = TargetRegistry::lookupTarget(triple.str(), error);
 	// Print an error and exit if we couldn't find the requested target.
 	// This generally occurs if we've forgotten to initialise the
 	// TargetRegistry or we have a bogus target triple.
@@ -2327,11 +2328,11 @@ int main(int argc, char** argv) {
 	auto features = "";
 
 	TargetOptions target_options;
-	auto target_machine = target->createTargetMachine(target_spec, cpu_type, features, target_options, Reloc::PIC_);
+	auto target_machine = target->createTargetMachine(triple.str(), cpu_type, features, target_options, Reloc::PIC_);
 
 	// TODO: check if this messes up optimizations
 	g_module->setDataLayout(target_machine->createDataLayout());
-	g_module->setTargetTriple(target_spec);
+	g_module->setTargetTriple(triple); //does this need to be triple.str() for Aghyad? If so, we need to do some ifdef nonsense.
 
 	std::string input_filename(filename);
 	auto output_filename = (
