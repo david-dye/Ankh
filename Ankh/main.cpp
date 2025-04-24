@@ -1,10 +1,10 @@
 #include <iostream>
 
 extern "C" {
-    int f(int, int);
+    int foo();
 }
 
 int main() {
-    std::cout << "f(5): " << f(5, 4) << std::endl;
+    std::cout << "foo(): " << foo() << std::endl;
 }
 
