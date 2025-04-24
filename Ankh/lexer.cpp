@@ -773,6 +773,7 @@ namespace AST {
 		Value* codegen_add(Value* L, Value* R, LocalType type);
 		Value* codegen_sub(Value* L, Value* R, LocalType type);
 		Value* codegen_mul(Value* L, Value* R, LocalType type);
+		Value* codegen_mod(Value* L, Value* R, LocalType type);
 		Value* codegen_div(Value* L, Value* R, LocalType type);
 		Value* codegen_assign();
 		Value* codegen() override;
@@ -859,6 +860,18 @@ namespace AST {
 			return nullptr;
 		}
 	}
+
+	// Generates an LLVM addition operation between two operators
+	// with type `type`
+	Value* BinaryExprAST::codegen_mod(Value* L, Value* R, LocalType type) {
+		if (type != type_int) {
+			log_compiler_error("Modulus is only defined for integer types:");
+			fprintf(stderr, "\tType: %i\n", type);
+			return nullptr;
+		}
+		return g_builder->CreateSRem(L, R, "modtmp");
+	}
+
 
 	Value* BinaryExprAST::codegen_assign() {
 
@@ -1006,6 +1019,8 @@ namespace AST {
 			return codegen_mul(L, R, type_lhs);
 		case '/':
 			return codegen_div(L, R, type_lhs);
+		case '%':
+			return codegen_mod(L, R, type_lhs);
 		case '<':
 			return codegen_less(L, R, type_lhs);
 		case '>':
@@ -1923,6 +1938,7 @@ static void set_binop_precedence() {
 	g_binop_precedence['='] = 2;
 	g_binop_precedence['<'] = 10;
 	g_binop_precedence['>'] = 10;
+	g_binop_precedence['%'] = 15;
 	g_binop_precedence['+'] = 20;
 	g_binop_precedence['-'] = 20;
 	g_binop_precedence['*'] = 40;

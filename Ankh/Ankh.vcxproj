@@ -24,6 +24,7 @@
   <ItemGroup>
     <None Include="call_global_from_local.ank" />
     <None Include="get_max.ank" />
+    <None Include="mod_exp.ank" />
     <None Include="test_assign.ank" />
     <None Include="test_assign_var_to_var.ank" />
     <None Include="test_fail_assign_var_to_var.ank" />
