@@ -1,3 +1,6 @@
+//TODO Problems to fix
+//TODO - no_opt with while loops doens't work, look into it
+//TODO - scoped block flushing is causing problems, look into it
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -464,9 +467,8 @@ namespace AST {
 	Value* VariableExprAST::codegen() {
 		//assumes the variable has already been emitted somewhere and its value is available.
 		debug_log("just enterd var codeg\n");
-		print_map_keys(g_named_values);
 		AllocaProperties props = g_named_values[name];
-		print_map_keys(g_named_values);
+		// print_map_keys(g_named_values);
 		debug_log("after accessing name in g_named_values\n");
 
 		AllocaInst* alloca = props.alloca;
@@ -477,9 +479,6 @@ namespace AST {
 
 		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
 	
-		debug_log("printing loaded value in VariableAST\n");
-		loaded_value->print(llvm::outs());
-		debug_log("after printing loaded value in VariableAST\n");
 
 		return loaded_value;
 	}
@@ -1213,6 +1212,7 @@ namespace AST {
 		g_builder->SetInsertPoint(bb);
 
 
+		flush_named_values_map(proto->get_scope());
 		// Store the g_named_values in the current block
 		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
 			debug_log("just enterd 1st for\n");
@@ -1298,6 +1298,7 @@ namespace AST {
 		{}
 
 		Value* codegen() override;
+		uint8_t get_scope() { return scope; }
 	};
 
 	Value* BlockExprAST::codegen() {
@@ -1317,6 +1318,7 @@ namespace AST {
 			return log_compiler_error("Invalid type generated from block.");
 		}
 
+		flush_named_values_map(scope);
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
@@ -2365,7 +2367,7 @@ int main(int argc, char** argv) {
 
 	// TODO: check if this messes up optimizations
 	g_module->setDataLayout(target_machine->createDataLayout());
-	g_module->setTargetTriple(triple); //does this need to be triple.str() for Aghyad? If so, we need to do some ifdef nonsense.
+	g_module->setTargetTriple(target_spec); //does this need to be triple.str() for Aghyad? If so, we need to do some ifdef nonsense.
 
 	std::string input_filename(filename);
 	auto output_filename = (

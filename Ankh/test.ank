@@ -1,0 +1,5 @@
+double no_opt f(int x) {
+    double y;
+    y = 2.2;
+    x / y;
+}
