@@ -18,6 +18,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
@@ -31,6 +32,11 @@
 #include "llvm/Transforms/Scalar/Reassociate.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/FileSystem.h"
 #pragma warning(pop) //stop hiding warnings for *our* code
 
 //TODO: When implementing control flow, make sure to use code form chapter 7
@@ -2239,12 +2245,23 @@ static void parse_file() {
 
 int main(int argc, char** argv) {
 	debug_log("Debug log is active");
-	if (argc != 2) {
+	if (argc < 2) {
 		fprintf(stderr, "Usage: No .ank file provided to lexer.\n");
 		return 1;
 	}
 
 	const char* filename = argv[1];  // Get filename from arguments
+	
+	bool return_llvm_ir = false;
+	std::string snd_argument;
+	std::string flag;
+	if (argc > 2) {
+	 	// std::string snd_argument(argv[2]);
+		// std::string flag("--llvm-ir");
+	 	snd_argument = argv[2];
+		flag = "--llvm-ir";
+		return_llvm_ir = snd_argument == flag;
+	}
 
 	if (
 		strlen(filename) < 5 ||
@@ -2281,8 +2298,62 @@ int main(int argc, char** argv) {
 
 	std::cerr << "\nFile parsed successfully.\n" << std::endl;
 
-	//parsing was successful, print generated code
-	g_module->print(errs(), nullptr);
+	if (return_llvm_ir) {
+		//parsing was successful, print generated code
+		g_module->print(errs(), nullptr);
+		return 0;
+	}
+
+	auto target_spec = sys::getDefaultTargetTriple();
+
+	InitializeAllTargetInfos();
+	InitializeAllTargets();
+	InitializeAllTargetMCs();
+	InitializeAllAsmParsers();
+	InitializeAllAsmPrinters();
+
+	std::string error;
+	auto target = TargetRegistry::lookupTarget(target_spec, error);
+	// Print an error and exit if we couldn't find the requested target.
+	// This generally occurs if we've forgotten to initialise the
+	// TargetRegistry or we have a bogus target triple.
+	if (!target) {
+		errs() << error;
+		return 1;
+	}
+
+	auto cpu_type = "generic";
+	// no features (e.g. of featuers, SSE)
+	auto features = "";
+
+	TargetOptions target_options;
+	auto target_machine = target->createTargetMachine(target_spec, cpu_type, features, target_options, Reloc::PIC_);
+
+	// TODO: check if this messes up optimizations
+	g_module->setDataLayout(target_machine->createDataLayout());
+	g_module->setTargetTriple(target_spec);
+
+	std::string input_filename(filename);
+	auto output_filename = (
+		input_filename.substr(0, input_filename.find(".")) + ".o"
+	);
+	std::error_code error_code;
+	raw_fd_ostream dest(output_filename, error_code, llvm::sys::fs::OF_None);
+
+	if (error_code) {
+		errs() << "Could not open output file: " << error_code.message();
+		return 1;
+	}
+
+	legacy::PassManager pass;
+	auto file_type = CodeGenFileType::ObjectFile;
+
+	if (target_machine->addPassesToEmitFile(pass, dest, nullptr, file_type)) {
+	  errs() << "TargetMachine can't emit a file of this type";
+		return 1;
+	}
+	pass.run(*g_module);
+	dest.flush();
 
 	return 0;
 }
