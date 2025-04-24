@@ -1,5 +1,5 @@
 
-//supporting truly global variables with the current framework doesn't work, since everything is treated as a lambda function.
+//supporting truly global variables with the current framework doesn't work, since everything is treated as a function.
 //however, we can test nested scope:
 
 //returns 2 * (x + 10), but using an extra scope.
@@ -12,7 +12,6 @@ int foo(int x) {
 		y = x + 10;
 		y;
 	}
-	//this is valid!
 	z + y;
 }
 

@@ -96,7 +96,7 @@ enum Token {
 	// control flow
 	tok_if = -7,
 	tok_else = -8, //we don't use the tok_then that kaleidoscope uses, because... that's stupid
-
+	tok_while = -9,
 };
 
 enum LocalType {
@@ -501,6 +501,7 @@ namespace AST {
 			NameKeywords nk;
 			nk.is_fun = false;
 			// g_scope is the current scope the code is in
+			//std::cout << name << " scope: " << int(g_scope) << std::endl;
 			nk.scope = g_scope;
 			nk.security = this->get_security();
 			nk.type = this->get_type();
@@ -591,7 +592,7 @@ namespace AST {
 			);
 		}
 		else if (cond_v->getType()->isFloatingPointTy()) {
-			// Floating point comparison: CondV != 0.0
+			// Floating point comparison: cond_v != 0.0
 			cond_v = g_builder->CreateFCmpONE(
 				cond_v,
 				ConstantFP::get(*g_llvm_context, APFloat(0.0)),
@@ -661,6 +662,95 @@ namespace AST {
 
 		return PN;
 	}
+
+	class WhileExprAST : public ExprAST {
+		std::unique_ptr<ExprAST> cond_expr, body_expr;
+		bool valid = true;
+
+	public:
+		WhileExprAST (
+			std::unique_ptr<ExprAST> cond_expr, 
+			std::unique_ptr<ExprAST> body_expr
+		) : 
+			ExprAST(body_expr->get_type(), body_expr->get_security()),
+			cond_expr(std::move(cond_expr)), 
+			body_expr(std::move(body_expr))
+		{
+			if (this->cond_expr->get_security() > SECURITY_MIN) {
+				valid = false;
+				log_compiler_error("The security level of a condition must not be higher than public.");
+			}
+		}
+
+		Value* codegen() override;
+	};
+
+
+	Value* WhileExprAST::codegen() {
+		if (!valid) {
+			return nullptr;
+		}
+		// Make the new basic block for the loop header, inserting after current block.
+		Function* fun = g_builder->GetInsertBlock()->getParent();
+		BasicBlock* cond_bb = BasicBlock::Create(*g_llvm_context, "loop", fun);
+		BasicBlock* body_bb = BasicBlock::Create(*g_llvm_context, "body", fun);
+		BasicBlock* exit_bb = BasicBlock::Create(*g_llvm_context, "exit", fun);
+
+		//tell LLVM we're branching to cond_bb
+		g_builder->CreateBr(cond_bb);
+
+		//at cond_bb, generate code from the while condition
+		g_builder->SetInsertPoint(cond_bb);
+		//add PHI node to track loop result
+		PHINode* phi_result = g_builder->CreatePHI(local_type_to_llvm(this->get_type()), 2, "loopres");
+		//initial default value, in case the condition starts as false.
+		phi_result->addIncoming(get_default_type_value(local_type_to_llvm(this->get_type())), g_builder->GetInsertBlock());
+
+		Value* cond_val = cond_expr->codegen();
+		if (!cond_val) {
+			return nullptr;
+		}
+
+		// Convert condition to a bool by comparing non-equal to 0.
+		if (cond_val->getType()->isIntegerTy()) {
+			// Integer comparison: cond_val != 0
+			cond_val = g_builder->CreateICmpNE(
+				cond_val,
+				ConstantInt::get(cond_val->getType(), 0),
+				"ifcond"
+			);
+		}
+		else if (cond_val->getType()->isFloatingPointTy()) {
+			// Floating point comparison: cond_val != 0.0
+			cond_val = g_builder->CreateFCmpONE(
+				cond_val,
+				ConstantFP::get(*g_llvm_context, APFloat(0.0)),
+				"ifcond"
+			);
+		}
+		else {
+			log_compiler_error("Unknown condition value type");
+		}
+
+		//if the condition is true, go to body_bb. Otherwise, go to exit_bb
+		g_builder->CreateCondBr(cond_val, body_bb, exit_bb);
+
+		//generate body code
+		g_builder->SetInsertPoint(body_bb);
+		Value* body_val = body_expr->codegen();
+		if (!body_val) {
+			return nullptr;
+		}
+		phi_result->addIncoming(body_val, g_builder->GetInsertBlock());
+		//once body is done, go right back to the condition
+		g_builder->CreateBr(cond_bb);
+
+		//exit the loop
+		g_builder->SetInsertPoint(exit_bb);
+
+		return phi_result;
+	}
+
 
 	// BinaryExprAST - Expression class for a binary operator.
 	class BinaryExprAST : public ExprAST {
@@ -801,7 +891,7 @@ namespace AST {
 		llvm::Type* var_type = allocaInst->getAllocatedType();
 
 
-		std::cout << "Assign Check: " << var_type->getTypeID() << '\t' << val->getType()->getTypeID() << int(val->getType()->isPointerTy()) << std::endl;
+		//std::cout << "Assign Check: " << var_type->getTypeID() << '\t' << val->getType()->getTypeID() << int(val->getType()->isPointerTy()) << std::endl;
 
 
 		if (!(var_type->isIntegerTy()) && !(var_type->isFloatingPointTy())) {
@@ -1107,13 +1197,6 @@ namespace AST {
 		BasicBlock* bb = BasicBlock::Create(*g_llvm_context, "entry", f);
 		g_builder->SetInsertPoint(bb);
 
-		// Remove out of scope variables from `g_named_values`. Out of scope is
-		// determined based on the scope the function is in (as opposed to the 
-		// scope inside the function) which is determined by the scope the 
-		// prototype is in.
-		print_map_keys(g_named_values);
-		flush_named_values_map(proto->get_scope());
-		print_map_keys(g_named_values);
 
 		// Store the g_named_values in the current block
 		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
@@ -1171,11 +1254,20 @@ namespace AST {
 				g_fpm->run(*f, *g_fam);
 			}
 
+			// Remove out of scope variables from `g_named_values`. Out of scope is
+			// determined based on the scope the function is in (as opposed to the 
+			// scope inside the function) which is determined by the scope the 
+			// prototype is in.
+
+			// Should be equivalent to flush_named_values_map(0) since all functions are global scope.
+			flush_named_values_map(proto->get_scope());
 			return f;
 		}
 
 		// Error reading body, remove function.
 		f->eraseFromParent();
+
+		flush_named_values_map(proto->get_scope());
 		return nullptr;
 	}
 
@@ -1183,11 +1275,11 @@ namespace AST {
 	// BlockExprAST - This class represents a scoped block
 	class BlockExprAST : public ExprAST {
 		std::vector<std::unique_ptr<ExprAST>> body;
+		uint8_t scope; //this is the scope that the block lives in, not the scope that the block's body lives in
 
 	public:
-		// TODO: figure out if we want to give this a type
-		BlockExprAST(LocalType type, std::vector<std::unique_ptr<ExprAST>> body, const sectype security=SECURITY_MIN)
-			: ExprAST(type, security), body(std::move(body)) 
+		BlockExprAST(LocalType type, std::vector<std::unique_ptr<ExprAST>> body, const uint8_t scope, const sectype security=SECURITY_MIN)
+			: ExprAST(type, security), body(std::move(body)), scope(scope)
 		{}
 
 		Value* codegen() override;
@@ -1200,6 +1292,8 @@ namespace AST {
 			last = expr->codegen();
 		}
 
+		//flush_named_values_map(this->scope + 1);
+
 		//the following checks assume the return value is the last expression in the block.
 		if (body.size() > 0 && body[body.size() - 1]->get_security() != this->get_security()) {
 			return log_compiler_error("Invalid security level generated from block.");
@@ -1207,6 +1301,7 @@ namespace AST {
 		if (body.size() > 0 && body[body.size() - 1]->get_type() != this->get_type()) {
 			return log_compiler_error("Invalid type generated from block.");
 		}
+
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
@@ -1377,12 +1472,18 @@ static int get_tok() {
 			initialize_type_map();
 		}
 
-		if (g_identifier_str == "extern")
+		if (g_identifier_str == "extern") {
 			return tok_extern;
-		if (g_identifier_str == "if")
+		}
+		if (g_identifier_str == "if") {
 			return tok_if;
-		if (g_identifier_str == "else")
+		}
+		if (g_identifier_str == "else") {
 			return tok_else;
+		}
+		if (g_identifier_str == "while") {
+			return tok_while;
+		}
 
 		for (auto& type:g_type_map) {
 			if (g_identifier_str == type.first) {
@@ -1662,7 +1763,7 @@ static std::unique_ptr<ExprAST> parse_scoped_block() {
 	// Note: `flush_vars()` and `g_var_names` should only be used when parsing
 	// and using it in `codegen` can cause unexpected behavior
 	std::unique_ptr<BlockExprAST> block_code = std::make_unique<BlockExprAST>(
-		exprs.back()->get_type(), std::move(exprs), exprs.back()->get_security()
+		exprs.back()->get_type(), std::move(exprs), g_scope, exprs.back()->get_security()
 	);
 
 	flush_vars();
@@ -1695,7 +1796,7 @@ static std::unique_ptr<ExprAST> parse_var_expr() {
 	// Eat the type and get variable name
 	get_next_tok();
 	std::string var_name = g_identifier_str;
-	std::cout << var_name << std::endl;
+	//std::cout << var_name << std::endl;
 
 	// Eat the variable name
 	get_next_tok();
@@ -1709,46 +1810,73 @@ static std::unique_ptr<ExprAST> parse_var_expr() {
 //	Parses an if statement, in the form: conditional expr ::= if condition {} else {}
 static std::unique_ptr<ExprAST> parse_conditional_expr() {
 
-
-	if (g_scope == 0) {
-		get_next_tok();
-		return log_syntax_error("Scope must be nonzero to define an if statement.");
-	}
+	//if (g_scope == 0) {
+	//	get_next_tok();
+	//	return log_syntax_error("Scope must be nonzero to define an if statement.");
+	//}
 
 	get_next_tok();  // eat the if.
 
 	// condition.
 	auto cond_expr = parse_expression();
-	if (!cond_expr)
+	if (!cond_expr) {
 		return log_syntax_error("No condition was provided to the if expression.");
+	}
 
-	if (g_cur_tok != '{')
+	if (g_cur_tok != '{') {
 		return log_syntax_error("Expected scoped block ('{') following condition expression.");
+	}
 	 
 	auto then_expr = parse_scoped_block();
-	if (!then_expr)
+	if (!then_expr) {
 		return log_syntax_error("Expected non-empty scoped block ('{') following condition expression.");
+	}
 
 	std::unique_ptr<ExprAST> else_expr;
 	if (g_cur_tok == tok_else) {
 		//there is an else command to run
 		get_next_tok(); //eat the else
 
-		if (g_cur_tok != '{')
+		if (g_cur_tok != '{') {
 			return log_syntax_error("Expected scoped block ('{') following else expression.");
+		}
 
 		else_expr = parse_scoped_block();
-		if (!else_expr)
+		if (!else_expr) {
 			return log_syntax_error("Expected non-empty scoped block ('{') following else expression.");
+		}
 	} 
 	else {
 		//there is no else command to run
 		else_expr = nullptr;
 	}
 
-	return std::make_unique<IfExprAST>(std::move(cond_expr), std::move(then_expr),
-		std::move(else_expr));
+	return std::make_unique<IfExprAST>(std::move(cond_expr), std::move(then_expr), std::move(else_expr));
 }
+
+
+static std::unique_ptr<ExprAST> parse_while_expr() {
+	// while ::= while ( cond_expr ) {}
+
+	get_next_tok();  // eat the "while".
+
+	std::unique_ptr<ExprAST> condition = parse_expression();
+	if (!condition) {
+		return log_syntax_error("Expected condition after while loop.");
+	}
+
+	if (g_cur_tok != '{') {
+		return log_syntax_error("Expected scoped block ('{') following while condition.");
+	}
+
+	std::unique_ptr<ExprAST> body = parse_scoped_block();
+	if (!body) {
+		return log_syntax_error("Expected non-empty scoped block ('{') following while condition.");
+	}
+
+	return std::make_unique<WhileExprAST>(std::move(condition), std::move(body));
+}
+
 
 // parse_primary()
 //	Determines the type of expression to parse and calls the appropriate handler
@@ -1772,6 +1900,8 @@ static std::unique_ptr<ExprAST> parse_primary() {
 		return parse_scoped_block();
 	case tok_if:
 		return parse_conditional_expr();
+	case tok_while:
+		return parse_while_expr();
 	case ';':
 		//ignore semicolons
 		get_next_tok(); //eat ';'
@@ -2094,6 +2224,19 @@ static void handle_top_level_expression() {
 static void parse_file() {
 	// top := definition | external | expression | ';'
 	while (true) {
+		//// These are helpful for checking that variables are out of scope after certain functions are defined
+		//std::cout << "Current Names:" << std::endl;
+		//for (const auto& [name, val] : g_named_values) {
+		//	std::cout << name << std::endl;
+		//}
+		//std::cout << "Current Vars:" << std::endl;
+		//for (const auto& [name, val] : g_var_names) {
+		//	std::cout << name << std::endl;
+		//}
+		//std::cout << "Current Functions:" << std::endl;
+		//for (const auto& [name, val] : g_fun_names) {
+		//	std::cout << name << std::endl;
+		//}
 		switch (g_cur_tok) {
 			case tok_eof:
 				return;
@@ -2187,7 +2330,8 @@ int main(int argc, char** argv) {
 	InitializeAllAsmPrinters();
 
 	std::string error;
-	auto target = TargetRegistry::lookupTarget(target_spec, error);
+	llvm::Triple triple(target_spec);
+	auto target = TargetRegistry::lookupTarget(triple.str(), error);
 	// Print an error and exit if we couldn't find the requested target.
 	// This generally occurs if we've forgotten to initialise the
 	// TargetRegistry or we have a bogus target triple.
@@ -2201,11 +2345,11 @@ int main(int argc, char** argv) {
 	auto features = "";
 
 	TargetOptions target_options;
-	auto target_machine = target->createTargetMachine(target_spec, cpu_type, features, target_options, Reloc::PIC_);
+	auto target_machine = target->createTargetMachine(triple.str(), cpu_type, features, target_options, Reloc::PIC_);
 
 	// TODO: check if this messes up optimizations
 	g_module->setDataLayout(target_machine->createDataLayout());
-	g_module->setTargetTriple(target_spec);
+	g_module->setTargetTriple(triple); //does this need to be triple.str() for Aghyad? If so, we need to do some ifdef nonsense.
 
 	std::string input_filename(filename);
 	auto output_filename = (

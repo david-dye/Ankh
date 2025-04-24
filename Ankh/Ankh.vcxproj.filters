@@ -47,5 +47,10 @@
     <None Include="test_assign_var_to_var.ank" />
     <None Include="test_fail_max.ank" />
     <None Include="test_if_secure.ank" />
+    <None Include="test_fail_rename_scope.ank" />
+    <None Include="test_flush.ank" />
+    <None Include="call_global_from_local.ank" />
+    <None Include="test_while.ank" />
+    <None Include="test_fail_while.ank" />
   </ItemGroup>
 </Project>
