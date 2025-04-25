@@ -53,5 +53,6 @@
     <None Include="test_while.ank" />
     <None Include="test_fail_while.ank" />
     <None Include="mod_exp.ank" />
+    <None Include="test_multiple_assign.ank" />
   </ItemGroup>
 </Project>

@@ -8,6 +8,9 @@ int main() {
     int a = 649;
     int b = 550;
     int n = 37;
-    std::cout << "mod_exp(a, b, c): " << mod_exp(a, b, n) << std::endl;
+    printf(
+        "mod_exp(%i, %i, %i): %i",
+        a, b, n, mod_exp(a, b, n)
+    );
 }
 
