@@ -177,7 +177,7 @@ void print_map_keys(std::map<std::string, NameKeywords> mp) {
 void print_map_keys(std::map<std::string, AllocaProperties> mp) {
 	printf("printing map: \n");
 	for (auto it = mp.begin(); it != mp.end(); ++it) {
-		printf("\tit->first: %s\n", it->first.c_str());
+		printf("\tit->first: %s, it->second.scope: %i\n", it->first.c_str(), it->second.scope);
 	}
 }
 
@@ -1318,7 +1318,11 @@ namespace AST {
 			return log_compiler_error("Invalid type generated from block.");
 		}
 
+		debug_log("printing before flushing in scope block\n");
+		print_map_keys(g_named_values);
 		flush_named_values_map(scope);
+		debug_log("printing after flushing in scope block\n");
+		print_map_keys(g_named_values);
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
