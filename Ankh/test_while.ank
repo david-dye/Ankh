@@ -1,0 +1,17 @@
+
+// Like an if statement, a while loop returns the very last expression executed in its body.
+// If the body never runs, the while loop returns the default value of whatever the type of the
+// last instruction is. The semantics guarantee that there is at least one expression in the body.
+
+int no_opt foo() {
+	int x;
+	x = 0;
+
+	while (x < 10) {
+		x = x + 1;
+	}
+
+	x;
+}
+
+foo();

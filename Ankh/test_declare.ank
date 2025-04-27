@@ -1,0 +1,8 @@
+
+int foo(int x) {
+int y;
+y = x;
+
+int z;
+z = y;
+}

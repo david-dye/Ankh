@@ -1,0 +1,22 @@
+
+// Defines a function for computing modular exponentiation,
+// that is: mod_exp(a, b, n) := a^b (mod n)
+
+
+int mod_exp(int a, int b, int n) {
+
+	int c;
+	c = 1;
+
+	int i;
+	i = 0;
+
+	while (i < b) {
+		i = i + 1;
+		c = (a * c) % n;
+	}
+
+	c;
+
+}
+

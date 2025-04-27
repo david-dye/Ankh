@@ -1,0 +1,37 @@
+
+// This is, I believe, the first useful Ankh code. It returns the maximum value of two inputs.
+
+
+// We can sneakily cast an integer to a double by adding 0.0 to the integer, which invokes typecasting in the AST.
+
+double cast_int_to_double(int x) {
+	x + 0.
+}
+
+double max_int_double(int x, double y) {
+	if (x > y) {
+		cast_int_to_double(x)
+	} else {
+		y
+	}
+}
+
+double max_double(double x, double y) {
+	if (x > y) {
+		x
+	} else {
+		y
+	}
+}
+
+int max_int(int x, int y) {
+	if (x > y) {
+		x
+	} else {
+		y
+	}
+}
+
+max_int_double(6, 7.)
+max_double(6., 7.)
+max_int(6, 7)

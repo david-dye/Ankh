@@ -1,0 +1,19 @@
+
+//supporting truly global variables with the current framework doesn't work, since everything is treated as a function.
+//however, we can test nested scope:
+
+//returns 2 * (x + 10), but using an extra scope.
+int foo(int x) {
+
+	int z;
+	z = {
+		//all scoped values are hoisted to the function level. y is NOT flushed until foo returns.
+		int y;
+		y = x + 10;
+		y;
+	}
+	z + y;
+}
+
+//40
+foo(10);

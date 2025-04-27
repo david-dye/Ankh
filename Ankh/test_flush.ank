@@ -1,0 +1,9 @@
+
+
+int foo(int x) {
+	int y;
+}
+
+int bar(int x) {
+	int z;
+}

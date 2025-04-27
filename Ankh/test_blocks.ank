@@ -1,0 +1,28 @@
+
+
+// tests whether scoped blocks like {} work
+
+int foo(int x) {
+	x + 7;
+}
+
+
+double no_opt bar(int x, double y) {
+	x + y;
+	x - y;
+	x;
+	y;
+}
+
+
+{
+	foo(6);
+	bar(1, 2.0);
+}
+
+
+{
+	foo(42) + bar(7, 6.3);
+}
+
+
