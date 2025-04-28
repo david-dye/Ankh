@@ -1,0 +1,6 @@
+int no_opt f(int x) {
+    int y;
+    while (x > 0) {
+       0;
+    }
+}

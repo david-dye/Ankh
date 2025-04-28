@@ -3,7 +3,7 @@
 // that is: mod_exp(a, b, n) := a^b (mod n)
 
 
-int mod_exp(int a, int b, int n) {
+int no_opt mod_exp(int a, int b, int n) {
 
 	int c;
 	c = 1;

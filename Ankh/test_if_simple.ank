@@ -1,0 +1,5 @@
+int no_opt f(int x) {
+    if (x > 0) {
+        0;
+    }
+}

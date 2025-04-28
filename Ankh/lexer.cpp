@@ -466,10 +466,10 @@ namespace AST {
 
 	Value* VariableExprAST::codegen() {
 		//assumes the variable has already been emitted somewhere and its value is available.
-		debug_log("just enterd var codeg\n");
+		// debug_log("just enterd var codeg\n");
 		AllocaProperties props = g_named_values[name];
 		// print_map_keys(g_named_values);
-		debug_log("after accessing name in g_named_values\n");
+		// debug_log("after accessing name in g_named_values\n");
 
 		AllocaInst* alloca = props.alloca;
 
@@ -691,6 +691,7 @@ namespace AST {
 		}
 		// Make the new basic block for the loop header, inserting after current block.
 		Function* fun = g_builder->GetInsertBlock()->getParent();
+		BasicBlock* preheader_bb = g_builder->GetInsertBlock();
 		BasicBlock* cond_bb = BasicBlock::Create(*g_llvm_context, "loop", fun);
 		BasicBlock* body_bb = BasicBlock::Create(*g_llvm_context, "body", fun);
 		BasicBlock* exit_bb = BasicBlock::Create(*g_llvm_context, "exit", fun);
@@ -703,6 +704,7 @@ namespace AST {
 		//add PHI node to track loop result
 		PHINode* phi_result = g_builder->CreatePHI(local_type_to_llvm(this->get_type()), 2, "loopres");
 		//initial default value, in case the condition starts as false.
+		phi_result->addIncoming(get_default_type_value(local_type_to_llvm(this->get_type())), preheader_bb);
 		phi_result->addIncoming(get_default_type_value(local_type_to_llvm(this->get_type())), g_builder->GetInsertBlock());
 
 		Value* cond_val = cond_expr->codegen();
@@ -1212,7 +1214,7 @@ namespace AST {
 		g_builder->SetInsertPoint(bb);
 
 
-		flush_named_values_map(proto->get_scope());
+		// flush_named_values_map(proto->get_scope());
 		// Store the g_named_values in the current block
 		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
 			debug_log("just enterd 1st for\n");
@@ -1230,9 +1232,7 @@ namespace AST {
 			alloca_prop.scope = it->second.scope;
 			alloca_prop.type = it->second.type;
 			alloca_prop.val = val;
-			debug_log("just before assiging in function codge gen 1st if\n");
 			g_named_values[it->first] = alloca_prop;
-			debug_log("just after assiging in function codge gen 1st if\n");
 		}
 		// Add function arguments to the store 
 		for (auto& arg : f->args()) {
@@ -1247,9 +1247,7 @@ namespace AST {
 			std::string arg_name = arg.getName().str();
 			alloca_prop.type = proto->get_arg_type(arg_name);
 			alloca_prop.val = &arg;
-			debug_log("just before assiging in function codge gen 2 if\n");
 			g_named_values[std::string(arg.getName())] = alloca_prop;
-			debug_log("just after assiging in function codge gen 2 if\n");
 		}
 		
 		if (Value* retval = body->codegen()) {
@@ -1282,7 +1280,7 @@ namespace AST {
 		// Error reading body, remove function.
 		f->eraseFromParent();
 
-		flush_named_values_map(proto->get_scope());
+		// flush_named_values_map(proto->get_scope());
 		return nullptr;
 	}
 
@@ -1318,11 +1316,11 @@ namespace AST {
 			return log_compiler_error("Invalid type generated from block.");
 		}
 
-		debug_log("printing before flushing in scope block\n");
-		print_map_keys(g_named_values);
-		flush_named_values_map(scope);
-		debug_log("printing after flushing in scope block\n");
-		print_map_keys(g_named_values);
+		// debug_log("printing before flushing in scope block\n");
+		// print_map_keys(g_named_values);
+		// flush_named_values_map(scope);
+		// debug_log("printing after flushing in scope block\n");
+		// print_map_keys(g_named_values);
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
@@ -2392,6 +2390,10 @@ int main(int argc, char** argv) {
 	  errs() << "TargetMachine can't emit a file of this type";
 		return 1;
 	}
+	debug_log("just before dereferenceing g_module\n");
+	*g_module;	
+	debug_log("just after dereferenceing g_module\n");
+
 	pass.run(*g_module);
 	dest.flush();
 
