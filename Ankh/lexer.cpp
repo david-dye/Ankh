@@ -282,7 +282,7 @@ static void flush_vars() {
 // Removes variables from `g_named_values` with scope higher than `cur_scope`.
 static void flush_named_values_map(uint8_t cur_scope) {
 	for (auto it = g_named_values.begin(); it != g_named_values.end(); ) {
-		if (it->second.scope > g_scope) {
+		if (it->second.scope > cur_scope) {
 			it = g_named_values.erase(it);
 		}
 		else {
@@ -474,6 +474,8 @@ namespace AST {
 		AllocaInst* alloca = props.alloca;
 
 		if (!alloca) {
+			debug_log("About to fail, var name: %s\n, g_named_values: \n", name.c_str());
+			print_map_keys(g_named_values);
 			return log_compiler_error("Unknown variable name");
 		}
 
@@ -525,6 +527,12 @@ namespace AST {
 
 		AllocaProperties alloca_prop;
 		alloca_prop.alloca = alloca;
+		if (!alloca) {
+			debug_log("in localvar codegen, !alloca is True");
+		}
+		else {
+			debug_log("in localvar codegen, !alloca is False");
+		}
 		alloca_prop.scope = scope;
 		alloca_prop.type = get_type();
 		alloca_prop.val = default_val;
@@ -1214,7 +1222,7 @@ namespace AST {
 		g_builder->SetInsertPoint(bb);
 
 
-		// flush_named_values_map(proto->get_scope());
+		flush_named_values_map(proto->get_scope());
 		// Store the g_named_values in the current block
 		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
 			debug_log("just enterd 1st for\n");
@@ -1280,7 +1288,7 @@ namespace AST {
 		// Error reading body, remove function.
 		f->eraseFromParent();
 
-		// flush_named_values_map(proto->get_scope());
+		flush_named_values_map(proto->get_scope());
 		return nullptr;
 	}
 
@@ -1316,11 +1324,11 @@ namespace AST {
 			return log_compiler_error("Invalid type generated from block.");
 		}
 
-		// debug_log("printing before flushing in scope block\n");
-		// print_map_keys(g_named_values);
-		// flush_named_values_map(scope);
-		// debug_log("printing after flushing in scope block\n");
-		// print_map_keys(g_named_values);
+		debug_log("printing before flushing in scope block, g_scope: %i, this->scope: %i\n", g_scope, this->scope);
+		print_map_keys(g_named_values);
+		flush_named_values_map(scope);
+		debug_log("printing after flushing in scope block\n");
+		print_map_keys(g_named_values);
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
@@ -1707,7 +1715,6 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 			scope = g_var_names[id_name].scope;
 			security = g_var_names[id_name].security;
 		}
-		debug_log("after the if block\n");
 		return std::make_unique<VariableExprAST>(type, id_name, new_var, scope, security); 
 	}
 
@@ -2390,9 +2397,6 @@ int main(int argc, char** argv) {
 	  errs() << "TargetMachine can't emit a file of this type";
 		return 1;
 	}
-	debug_log("just before dereferenceing g_module\n");
-	*g_module;	
-	debug_log("just after dereferenceing g_module\n");
 
 	pass.run(*g_module);
 	dest.flush();

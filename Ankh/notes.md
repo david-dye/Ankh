@@ -23,3 +23,12 @@ One potential thing is the GetInsertBlock() thing.
     - changing this to body_bb, cond_bb seems to not fix the problem
 The tutorial mentions remembering the block before the loop, but this doesn't seem to be done in the while expr codegen.
 There's something about where the phinode is loading from.
+Found problem: it was the entry block not having a corresponding phi node value
+
+Apr 28 
+Working on doing scoped blocks
+One thing to check is to see if the scope should be 0 or 1 inside the function, I think it should be 1.
+So it's  saying that a variable defined before the block, c, is out of scope althoug we are dereferencing after the block. My guess is that we are flushing it when we are flushing the scoped block.
+Is the relevant variable g_scope or this->scope?
+It's saying that this->scope is 0 but I don't think this is true, or should this->scope be the scope that the block lives in ?
+So the problem seems to be that the alloca is not defined.I fixed one issue in flash_named variables where it was flushing based on g_scope rather than the argument 
