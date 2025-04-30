@@ -1,0 +1,18 @@
+int no_opt fib(int n) {
+    int ctr;
+    ctr = 0;
+    
+    int curr;
+    curr = 1;
+    
+    int last;
+    last = 0;
+    while (ctr < n - 1) {
+        int temp;
+        temp = curr;
+        curr = curr + last;
+        last = temp;
+        ctr = ctr + 1;
+    }
+    curr;
+}

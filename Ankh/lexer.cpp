@@ -1,3 +1,6 @@
+//TODO Problems to fix
+//TODO - no_opt with while loops doens't work, look into it
+//TODO - scoped block flushing is causing problems, look into it
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -174,7 +177,7 @@ void print_map_keys(std::map<std::string, NameKeywords> mp) {
 void print_map_keys(std::map<std::string, AllocaProperties> mp) {
 	printf("printing map: \n");
 	for (auto it = mp.begin(); it != mp.end(); ++it) {
-		printf("\tit->first: %s\n", it->first.c_str());
+		printf("\tit->first: %s, it->second.scope: %i\n", it->first.c_str(), it->second.scope);
 	}
 }
 
@@ -279,7 +282,7 @@ static void flush_vars() {
 // Removes variables from `g_named_values` with scope higher than `cur_scope`.
 static void flush_named_values_map(uint8_t cur_scope) {
 	for (auto it = g_named_values.begin(); it != g_named_values.end(); ) {
-		if (it->second.scope > g_scope) {
+		if (it->second.scope > cur_scope) {
 			it = g_named_values.erase(it);
 		}
 		else {
@@ -463,23 +466,21 @@ namespace AST {
 
 	Value* VariableExprAST::codegen() {
 		//assumes the variable has already been emitted somewhere and its value is available.
-		debug_log("just enterd var codeg\n");
-		print_map_keys(g_named_values);
+		// debug_log("just enterd var codeg\n");
 		AllocaProperties props = g_named_values[name];
-		print_map_keys(g_named_values);
-		debug_log("after accessing name in g_named_values\n");
+		// print_map_keys(g_named_values);
+		// debug_log("after accessing name in g_named_values\n");
 
 		AllocaInst* alloca = props.alloca;
 
 		if (!alloca) {
+			debug_log("About to fail, var name: %s\n, g_named_values: \n", name.c_str());
+			print_map_keys(g_named_values);
 			return log_compiler_error("Unknown variable name");
 		}
 
 		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
 	
-		debug_log("printing loaded value in VariableAST\n");
-		loaded_value->print(llvm::outs());
-		debug_log("after printing loaded value in VariableAST\n");
 
 		return loaded_value;
 	}
@@ -526,6 +527,12 @@ namespace AST {
 
 		AllocaProperties alloca_prop;
 		alloca_prop.alloca = alloca;
+		if (!alloca) {
+			debug_log("in localvar codegen, !alloca is True");
+		}
+		else {
+			debug_log("in localvar codegen, !alloca is False");
+		}
 		alloca_prop.scope = scope;
 		alloca_prop.type = get_type();
 		alloca_prop.val = default_val;
@@ -692,6 +699,7 @@ namespace AST {
 		}
 		// Make the new basic block for the loop header, inserting after current block.
 		Function* fun = g_builder->GetInsertBlock()->getParent();
+		BasicBlock* preheader_bb = g_builder->GetInsertBlock();
 		BasicBlock* cond_bb = BasicBlock::Create(*g_llvm_context, "loop", fun);
 		BasicBlock* body_bb = BasicBlock::Create(*g_llvm_context, "body", fun);
 		BasicBlock* exit_bb = BasicBlock::Create(*g_llvm_context, "exit", fun);
@@ -704,6 +712,7 @@ namespace AST {
 		//add PHI node to track loop result
 		PHINode* phi_result = g_builder->CreatePHI(local_type_to_llvm(this->get_type()), 2, "loopres");
 		//initial default value, in case the condition starts as false.
+		phi_result->addIncoming(get_default_type_value(local_type_to_llvm(this->get_type())), preheader_bb);
 		phi_result->addIncoming(get_default_type_value(local_type_to_llvm(this->get_type())), g_builder->GetInsertBlock());
 
 		Value* cond_val = cond_expr->codegen();
@@ -1213,6 +1222,7 @@ namespace AST {
 		g_builder->SetInsertPoint(bb);
 
 
+		flush_named_values_map(proto->get_scope());
 		// Store the g_named_values in the current block
 		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
 			debug_log("just enterd 1st for\n");
@@ -1230,9 +1240,7 @@ namespace AST {
 			alloca_prop.scope = it->second.scope;
 			alloca_prop.type = it->second.type;
 			alloca_prop.val = val;
-			debug_log("just before assiging in function codge gen 1st if\n");
 			g_named_values[it->first] = alloca_prop;
-			debug_log("just after assiging in function codge gen 1st if\n");
 		}
 		// Add function arguments to the store 
 		for (auto& arg : f->args()) {
@@ -1247,9 +1255,7 @@ namespace AST {
 			std::string arg_name = arg.getName().str();
 			alloca_prop.type = proto->get_arg_type(arg_name);
 			alloca_prop.val = &arg;
-			debug_log("just before assiging in function codge gen 2 if\n");
 			g_named_values[std::string(arg.getName())] = alloca_prop;
-			debug_log("just after assiging in function codge gen 2 if\n");
 		}
 		
 		if (Value* retval = body->codegen()) {
@@ -1298,6 +1304,7 @@ namespace AST {
 		{}
 
 		Value* codegen() override;
+		uint8_t get_scope() { return scope; }
 	};
 
 	Value* BlockExprAST::codegen() {
@@ -1317,6 +1324,11 @@ namespace AST {
 			return log_compiler_error("Invalid type generated from block.");
 		}
 
+		debug_log("printing before flushing in scope block, g_scope: %i, this->scope: %i\n", g_scope, this->scope);
+		print_map_keys(g_named_values);
+		flush_named_values_map(scope);
+		debug_log("printing after flushing in scope block\n");
+		print_map_keys(g_named_values);
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
@@ -1703,7 +1715,6 @@ static std::unique_ptr<ExprAST> parse_identifier_expr() {
 			scope = g_var_names[id_name].scope;
 			security = g_var_names[id_name].security;
 		}
-		debug_log("after the if block\n");
 		return std::make_unique<VariableExprAST>(type, id_name, new_var, scope, security); 
 	}
 
@@ -2386,6 +2397,7 @@ int main(int argc, char** argv) {
 	  errs() << "TargetMachine can't emit a file of this type";
 		return 1;
 	}
+
 	pass.run(*g_module);
 	dest.flush();
 
