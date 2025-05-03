@@ -42,10 +42,7 @@
 #include "llvm/Support/FileSystem.h"
 #pragma warning(pop) //stop hiding warnings for *our* code
 
-//TODO: When implementing control flow, make sure to use code form chapter 7
-//TODO: this includes ForExprAST::codegen()
-
-#define DEBUG
+//#define DEBUG
 
 #ifdef DEBUG
 void debug_log(const char* format, ...) {
@@ -100,6 +97,9 @@ enum Token {
 	tok_if = -7,
 	tok_else = -8, //we don't use the tok_then that kaleidoscope uses, because... that's stupid
 	tok_while = -9,
+
+	// special keywords
+	tok_setnat = -10,
 };
 
 enum LocalType {
@@ -107,7 +107,7 @@ enum LocalType {
 	type_int = -1,
 	type_char = -2,
 	type_double = -3,
-	type_infint =  -4,
+	type_nat =  -4,
 };
 
 
@@ -117,7 +117,7 @@ static void initialize_type_map() {
 	g_type_map["int"] = LocalType::type_int;
 	g_type_map["char"] = LocalType::type_char;
 	g_type_map["double"] = LocalType::type_double;
-	g_type_map["infint"] = LocalType::type_infint;
+	g_type_map["nat"] = LocalType::type_nat;
 }
 
 static std::string g_no_function_optimization_tag = "no_opt";
@@ -136,7 +136,13 @@ static bool g_disable_function_optimization;
 static std::string g_number_str;			// Filled in for tok_num, stored as string to enable infinite precision
 static sectype g_sectype = SECURITY_MIN;	// Changes only when a new security identifier is seen or used
 static bool g_number_has_period; 			// Helps distinguish between floats and ints
+static bool g_number_is_nat;				// Helps distinguish between nats and ints
 static LocalType g_type = type_unsupported;	// Used when a variable or function is defined
+
+
+static uint32_t g_max_nat_bits = 256;	//maximum number of bits in a big unsigned integer defaults to 256
+static bool g_seen_nat = false;		//has a nat been parsed yet?
+
 
 
 //contains everything you could possibly want to know about a name.
@@ -327,17 +333,49 @@ namespace AST {
 				return Type::getInt32Ty(*g_llvm_context);
 			case LocalType::type_double:
 				return Type::getDoubleTy(*g_llvm_context);
-				break;
 			//! Maybe we don't need chars
 			case LocalType::type_char:
 				return Type::getInt8Ty(*g_llvm_context);
-				break;
-			// TODO: deal with `type_infint`, maybe getIntNTy? or Maybe Double?
+			case LocalType::type_nat: {
+				Type* i32Ty = Type::getInt32Ty(*g_llvm_context);
+				ArrayType* limbsArrayTy = ArrayType::get(i32Ty, g_max_nat_bits / 32);
+				StructType* natTy = StructType::get(*g_llvm_context, { limbsArrayTy }, false);
+				return natTy;
+			}
 			default:
 				log_compiler_error("Unsupported type\n");
 				return Type::getVoidTy(*g_llvm_context);
 				break;
 		}
+	}
+
+
+	static Value* cast_int_to_nat(Value* int_val=nullptr) {
+		Type* i32Ty = Type::getInt32Ty(*g_llvm_context);
+		Value* nat_ptr = g_builder->CreateAlloca(local_type_to_llvm(type_nat), nullptr, "nat_var");
+
+		// Zero-initialize the entire struct manually
+		g_builder->CreateMemSet(
+			nat_ptr,
+			ConstantInt::get(Type::getInt8Ty(*g_llvm_context), 0),
+			g_max_nat_bits / 8,
+			llvm::MaybeAlign(4)
+		);
+		if (!int_val) {
+			return nat_ptr;
+		}
+
+		// Get pointer to the first limb (limbs[0])
+		Value* limb_array_ptr = g_builder->CreateStructGEP(local_type_to_llvm(type_nat), nat_ptr, 0, "limb_array_ptr");
+		Value* limb0_ptr = g_builder->CreateGEP(
+			ArrayType::get(i32Ty, g_max_nat_bits / 32),
+			limb_array_ptr,
+			{ ConstantInt::get(i32Ty, 0), ConstantInt::get(i32Ty, 0) }
+		);
+
+		// Store the 32-bit integer value into limbs[0]
+		g_builder->CreateStore(int_val, limb0_ptr);
+		return nat_ptr;
 	}
 
 
@@ -349,6 +387,9 @@ namespace AST {
 		}
 		else if (type->isFloatingPointTy()) {
 			return ConstantFP::get(type, 0.0);
+		}
+		else if (type == local_type_to_llvm(type_nat)) {
+			return cast_int_to_nat();
 		}
 		log_compiler_error("Unsupported type for default type value");
 		return nullptr;
@@ -408,24 +449,111 @@ namespace AST {
 		Value* codegen() override;
 	};
 
-	//* Can use the numbits here to create an infint
-	//* Can we use the ElementCount::getScalable to help with this?
-	//* Note that ConstantInt::get can take a vector to specify the number which
-	//* can be used for infint https://llvm.org/doxygen/classllvm_1_1APInt.html#a4a46ba6ad1c259b7fa9bc638ebb0a2f8
 	Value* IntegerAST::codegen() {
 		return ConstantInt::get(*g_llvm_context, APInt(32, val));
 	}
 
-	// InfIntegerAST - Expression class for integers, with infinite precision.
-	class InfIntegerAST : public ExprAST {
-		//this needs to be fixed in the future
-		std::string val;
+	// NatAST - Expression class for natural numbers, with precision up to g_max_nat_bits bits.
+	class NatAST : public ExprAST {
+		//this vector will always have g_max_nat_bits / 32 elements
+		std::unique_ptr<uint32_t[]> val;
+		uint32_t num_limbs;
+		bool valid = true;
 
 	public:
-		InfIntegerAST(const LocalType type, const std::string& val, const sectype security=SECURITY_MIN) : ExprAST(type, security), val(val) {}
+		NatAST(const LocalType type, std::string digits, const sectype security=SECURITY_MIN) : 
+			ExprAST(type, security), val(new uint32_t[g_max_nat_bits / 32]), num_limbs(g_max_nat_bits / 32) {
+			std::memset(val.get(), 0, g_max_nat_bits/8);
+
+			for (char ch : digits) {
+				uint8_t digit = ch - '0';
+				//std::cout << int(digit) << std::endl;
+				if (!mul_by_10() || !add_digit(digit)) {
+					log_compiler_error("Overflow encountered when constructing natural number literal.");
+					valid = false;
+					break;
+				}
+			}
+			//for (int i = 0; i < g_max_nat_bits / 32; ++i) {
+			//	std::cout << val[i] << std::endl;
+			//}
+		}
 		Value* codegen() override;
+
+	private:
+		// returns true if multiplied by 10 successfully, false if overflow.
+		bool mul_by_10() {
+			uint64_t carry = 0;
+			for (uint32_t i = 0; i < num_limbs; ++i) {
+				uint64_t prod = static_cast<uint64_t>(val[i]) * 10 + carry;
+				val[i] = static_cast<uint32_t>(prod);
+				carry = prod >> 32;
+			}
+			if (carry) {
+				//overflow
+				return false;
+			}
+			return true;
+		}
+
+		// returns true if added digit successfully, false if overflow.
+		bool add_digit(uint8_t digit) {
+			uint64_t carry = digit;
+			for (uint32_t i = 0; i < num_limbs; ++i) {
+				uint64_t sum = static_cast<uint64_t>(val[i]) + carry;
+				val[i] = static_cast<uint32_t>(sum);
+				carry = sum >> 32;
+				if (!carry) {
+					return true;
+				}
+			}
+			if (carry) {
+				//overflow
+				return false;
+			}
+			return true;
+		}
 	};
-	// TODO: add codegen()
+
+	Value* NatAST::codegen() {
+
+		if (!valid) {
+			return nullptr;
+		}
+
+		Type* i32Ty = Type::getInt32Ty(*g_llvm_context);
+		ArrayType* limbsArrayTy = ArrayType::get(i32Ty, num_limbs);
+		StructType* natTy = StructType::get(*g_llvm_context, { limbsArrayTy }, false);
+
+		// Convert each limb to a Constant
+		std::vector<Constant*> limb_constants;
+		limb_constants.reserve(num_limbs);
+		for (uint32_t i = 0; i < num_limbs; ++i) {
+			limb_constants.push_back(ConstantInt::get(i32Ty, val[i]));
+		}
+
+		// Create the [N x i32] array constant
+		Constant* limbs = ConstantArray::get(limbsArrayTy, limb_constants);
+
+		// Wrap it in the struct { [N x i32] }
+		Constant* nat_literal = ConstantStruct::get(natTy, { limbs });
+
+		Value* nat_ptr = g_builder->CreateAlloca(natTy, nullptr, "nat_literal");
+
+		// Create a global constant or constant memory block
+		GlobalVariable* const_nat = new GlobalVariable(
+			*g_module,
+			natTy,
+			/*isConstant=*/true,
+			GlobalValue::PrivateLinkage,
+			nat_literal,
+			"nat_literal_const"
+		);
+
+		// Use memcpy to copy the constant into the local variable
+		g_builder->CreateMemCpy(nat_ptr, llvm::MaybeAlign(4), const_nat, llvm::MaybeAlign(4), g_max_nat_bits/8);
+		return nat_ptr;
+	}
 
 	/// VariableExprAST - Expression class for referencing a variable, like "a".
 	class VariableExprAST : public ExprAST {
@@ -473,15 +601,22 @@ namespace AST {
 
 		AllocaInst* alloca = props.alloca;
 
+		if (!alloca && get_type() == type_nat) {
+			//the variable is already a pointer
+			return props.val;
+		}
+
 		if (!alloca) {
 			debug_log("About to fail, var name: %s\n, g_named_values: \n", name.c_str());
 			print_map_keys(g_named_values);
 			return log_compiler_error("Unknown variable name");
 		}
 
-		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
-	
+		if (get_type() == type_nat) {
+			return alloca;
+		}
 
+		Value* loaded_value = g_builder->CreateLoad(alloca->getAllocatedType(), alloca, name.c_str());
 		return loaded_value;
 	}
 
@@ -523,7 +658,12 @@ namespace AST {
 		Type* llvm_type = local_type_to_llvm(get_type());
 		AllocaInst* alloca = create_entry_block_alloca(fun, name, llvm_type);
 		Value* default_val = get_default_type_value(llvm_type);
-		g_builder->CreateStore(default_val, alloca);
+		if (get_type() == type_nat) {
+			g_builder->CreateMemCpy(alloca, MaybeAlign(4), default_val, MaybeAlign(4), g_max_nat_bits / 8);
+		}
+		else {
+			g_builder->CreateStore(default_val, alloca);
+		}
 
 		AllocaProperties alloca_prop;
 		alloca_prop.alloca = alloca;
@@ -537,6 +677,10 @@ namespace AST {
 		alloca_prop.type = get_type();
 		alloca_prop.val = default_val;
 		g_named_values[name] = alloca_prop;
+
+		if (get_type() == type_nat) {
+			return alloca;
+		}
 
 		return default_val;
 	}
@@ -778,15 +922,62 @@ namespace AST {
 			lhs(std::move(lhs)), 
 			rhs(std::move(rhs))
 		{}
+		Value* codegen_less_nats(Value* L, Value* R);
 		Value* codegen_less(Value* L, Value* R, LocalType type);
 		Value* codegen_add(Value* L, Value* R, LocalType type);
+		Value* codegen_add_nats(Value* L, Value* R);
 		Value* codegen_sub(Value* L, Value* R, LocalType type);
+		Value* codegen_sub_nats(Value* L, Value* R);
 		Value* codegen_mul(Value* L, Value* R, LocalType type);
+		Value* codegen_mul_nats(Value* L, Value* R);
 		Value* codegen_mod(Value* L, Value* R, LocalType type);
+		Value* codegen_mod_nats(Value* L, Value* R);
 		Value* codegen_div(Value* L, Value* R, LocalType type);
+		Value* codegen_div_nats(Value* L, Value* R);
 		Value* codegen_assign();
 		Value* codegen() override;
 	}; 
+
+	Value* BinaryExprAST::codegen_less_nats(Value* L, Value* R) {
+		// Returns an i1 Value* representing whether L < R.
+		Type* i32Ty = g_builder->getInt32Ty();
+		Type* i1Ty = g_builder->getInt1Ty();
+
+		Value* result = ConstantInt::getFalse(*g_llvm_context);
+		Value* decided = ConstantInt::getFalse(*g_llvm_context);
+
+		// Get pointers to the array field (index 0 in the struct)
+		Value* L_ptr = g_builder->CreateStructGEP(local_type_to_llvm(type_nat), L, 0, "limb_array_ptr_L");
+		Value* R_ptr = g_builder->CreateStructGEP(local_type_to_llvm(type_nat), R, 0, "limb_array_ptr_R");
+
+		for (int i = (g_max_nat_bits / 32) - 1; i >= 0; --i) {
+			// Get pointers to L.limbs[i] and R.limbs[i]
+			Value* idx_i = ConstantInt::get(i32Ty, i);
+			Value* limb_ptr_L = g_builder->CreateGEP(i32Ty, L_ptr, { idx_i }, "limb_ptr_L");
+			Value* limb_ptr_R = g_builder->CreateGEP(i32Ty, R_ptr, { idx_i }, "limb_ptr_R");
+			
+			// Load the values at those pointers
+			Value* l_i = g_builder->CreateLoad(i32Ty, limb_ptr_L, "limb_L");
+			Value* r_i = g_builder->CreateLoad(i32Ty, limb_ptr_R, "limb_R");
+
+			// Compare limbs
+			Value* lt = g_builder->CreateICmpULT(l_i, r_i); // L < R at this limb
+			Value* gt = g_builder->CreateICmpUGT(l_i, r_i); // L > R at this limb
+
+			// Only update result if not yet decided
+			Value* less_now = g_builder->CreateAnd(lt, g_builder->CreateNot(decided));
+			Value* greater_now = g_builder->CreateAnd(gt, g_builder->CreateNot(decided));
+
+			// Update result and decided
+			result = g_builder->CreateSelect(less_now, ConstantInt::getTrue(*g_llvm_context), result);
+			result = g_builder->CreateSelect(greater_now, ConstantInt::getFalse(*g_llvm_context), result);
+
+			Value* diff_found = g_builder->CreateOr(lt, gt);
+			decided = g_builder->CreateOr(decided, diff_found);
+		}
+
+		return result;
+	}
 
 	Value* BinaryExprAST::codegen_less(
 		Value* L, Value* R, LocalType type
@@ -797,11 +988,64 @@ namespace AST {
 		else if (type == type_double) {
 			return g_builder->CreateFCmpULT(L, R, "cmptmp");
 		}
+		else if (
+			type == type_nat && 
+			lhs->get_security() == SECURITY_MIN && 
+			rhs->get_security() == SECURITY_MIN
+		) {
+			return codegen_less_nats(L, R);
+		}
 		log_compiler_error("Comparison is not defined for this type:");
 		fprintf(stderr, "\tType: %i\n", type);
 		return nullptr;
 	}
 
+	Value* BinaryExprAST::codegen_add_nats(Value* L, Value* R) {
+		Type* i32Ty = g_builder->getInt32Ty();
+		Type* i1Ty = g_builder->getInt1Ty();
+
+		Value* carry = ConstantInt::get(i1Ty, 0);
+		Value* result = UndefValue::get(local_type_to_llvm(type_nat));
+
+
+		// Get pointers to the array field (index 0 in the struct)
+		Value* L_ptr = g_builder->CreateStructGEP(local_type_to_llvm(type_nat), L, 0, "limb_array_ptr_L");
+		Value* R_ptr = g_builder->CreateStructGEP(local_type_to_llvm(type_nat), R, 0, "limb_array_ptr_R");
+
+		Value* nat_ptr = g_builder->CreateAlloca(local_type_to_llvm(type_nat), nullptr, "nat_result");
+		Value* result_limbs_ptr = g_builder->CreateStructGEP(local_type_to_llvm(type_nat), nat_ptr, 0, "limb_array_ptr");
+
+		for (unsigned i = 0; i < g_max_nat_bits / 32; ++i) {
+			// Get pointers to L.limbs[i] and R.limbs[i]
+			Value* idx_i = ConstantInt::get(i32Ty, i);
+			Value* limb_ptr_L = g_builder->CreateGEP(i32Ty, L_ptr, { idx_i }, "limb_ptr_L");
+			Value* limb_ptr_R = g_builder->CreateGEP(i32Ty, R_ptr, { idx_i }, "limb_ptr_R");
+
+			// Load the values at those pointers
+			Value* l_i = g_builder->CreateLoad(i32Ty, limb_ptr_L, "limb_L");
+			Value* r_i = g_builder->CreateLoad(i32Ty, limb_ptr_R, "limb_R");
+
+			// Sum: temp_sum = l + r
+			Value* temp_sum = g_builder->CreateAdd(l_i, r_i, "sum_no_carry");
+
+			// Final sum with carry
+			Value* sum = g_builder->CreateAdd(temp_sum, g_builder->CreateZExt(carry, i32Ty), "sum_with_carry");
+
+			// carry = (temp_sum < l) || (sum < temp_sum)
+			Value* carry1 = g_builder->CreateICmpULT(temp_sum, l_i);
+			Value* carry2 = g_builder->CreateICmpULT(sum, temp_sum);
+			carry = g_builder->CreateOr(carry1, carry2, "carry_out");
+
+			Value* result_limb_ptr = g_builder->CreateGEP(
+				ArrayType::get(i32Ty, g_max_nat_bits / 32),
+				result_limbs_ptr,
+				{ ConstantInt::get(i32Ty, 0), idx_i }
+			);
+			g_builder->CreateStore(sum, result_limb_ptr);
+		}
+
+		return nat_ptr;
+	}
 
 	// Generates an LLVM addition operation between two operators
 	// with type `type`
@@ -811,6 +1055,8 @@ namespace AST {
 			return g_builder->CreateAdd(L, R, "addtmp");
 		case type_double:
 			return g_builder->CreateFAdd(L, R, "addtmp");
+		case type_nat:
+			return codegen_add_nats(L, R);
 		default:
 			log_compiler_error("Addition is not defined for this type:");
 			fprintf(stderr, "\tType: %i\n", type);
@@ -818,7 +1064,57 @@ namespace AST {
 		}
 	}
 
-	// Generates an LLVM addition operation between two operators
+
+	Value* BinaryExprAST::codegen_sub_nats(Value* L, Value* R) {
+		Type* i32Ty = g_builder->getInt32Ty();
+		Type* i1Ty = g_builder->getInt1Ty();
+
+		Value* borrow = ConstantInt::get(i1Ty, 0);
+		Value* result = UndefValue::get(local_type_to_llvm(type_nat));
+
+		// Get pointers to the array field (index 0 in the struct)
+		Value* L_ptr = g_builder->CreateStructGEP(local_type_to_llvm(type_nat), L, 0, "limb_array_ptr_L");
+		Value* R_ptr = g_builder->CreateStructGEP(local_type_to_llvm(type_nat), R, 0, "limb_array_ptr_R");
+
+		Value* nat_ptr = g_builder->CreateAlloca(local_type_to_llvm(type_nat), nullptr, "nat_literal");
+		Value* result_limbs_ptr = g_builder->CreateStructGEP(local_type_to_llvm(type_nat), nat_ptr, 0, "limb_array_ptr");
+
+		for (unsigned i = 0; i < g_max_nat_bits / 32; ++i) {
+
+			// Get pointers to L.limbs[i] and R.limbs[i]
+			Value* idx_i = ConstantInt::get(i32Ty, i);
+			Value* limb_ptr_L = g_builder->CreateGEP(i32Ty, L_ptr, { idx_i }, "limb_ptr_L");
+			Value* limb_ptr_R = g_builder->CreateGEP(i32Ty, R_ptr, { idx_i }, "limb_ptr_R");
+
+			// Load the values at those pointers
+			Value* l_i = g_builder->CreateLoad(i32Ty, limb_ptr_L, "limb_L");
+			Value* r_i = g_builder->CreateLoad(i32Ty, limb_ptr_R, "limb_R");
+
+			// r_with_borrow = r_limb + borrow
+			Value* borrow_ext = g_builder->CreateZExt(borrow, i32Ty);
+			Value* r_with_borrow = g_builder->CreateAdd(r_i, borrow_ext, "r_with_borrow");
+
+			// Compute if new borrow is needed before doing the subtraction
+			// borrow_out = (l_limb < r_with_borrow)
+			borrow = g_builder->CreateICmpULT(l_i, r_with_borrow, "borrow_out");
+
+			// Subtract: l_limb - r_with_borrow
+			Value* diff = g_builder->CreateSub(l_i, r_with_borrow, "limb_diff");
+
+			Value* result_limb_ptr = g_builder->CreateGEP(
+				ArrayType::get(i32Ty, g_max_nat_bits / 32),
+				result_limbs_ptr,
+				{ ConstantInt::get(i32Ty, 0), idx_i }
+			);
+			g_builder->CreateStore(diff, result_limb_ptr);
+		}
+
+		return nat_ptr;
+	}
+
+
+
+	// Generates an LLVM subtraction operation between two operators
 	// with type `type`
 	Value* BinaryExprAST::codegen_sub(Value* L, Value* R, LocalType type) {
 		switch (type) {
@@ -826,6 +1122,8 @@ namespace AST {
 			return g_builder->CreateSub(L, R, "subtmp");
 		case type_double:
 			return g_builder->CreateFSub(L, R, "subtmp");
+		case type_nat:
+			return codegen_sub_nats(L, R);
 		default:
 			log_compiler_error("Subtraction is not defined for this type:");
 			fprintf(stderr, "\tType: %i\n", type);
@@ -833,7 +1131,7 @@ namespace AST {
 		}
 	}
 
-	// Generates an LLVM addition operation between two operators
+	// Generates an LLVM multiplication operation between two operators
 	// with type `type`
 	Value* BinaryExprAST::codegen_mul(Value* L, Value* R, LocalType type) {
 		switch (type) {
@@ -848,7 +1146,7 @@ namespace AST {
 		}
 	}
 
-	// Generates an LLVM addition operation between two operators
+	// Generates an LLVM division operation between two operators
 	// with type `type`
 	Value* BinaryExprAST::codegen_div(Value* L, Value* R, LocalType type) {
 		//It is possible to generate code giving division by 0. Maybe this is okay since it fails at runtime
@@ -870,7 +1168,7 @@ namespace AST {
 		}
 	}
 
-	// Generates an LLVM addition operation between two operators
+	// Generates an LLVM modulus operation between two operators
 	// with type `type`
 	Value* BinaryExprAST::codegen_mod(Value* L, Value* R, LocalType type) {
 		if (type != type_int) {
@@ -901,58 +1199,65 @@ namespace AST {
 		}
 
 		Value* variable = g_named_values[lhse->get_name()].alloca;
-		if (!variable) {
+		if (!variable && get_type() != type_nat) {
 			return log_compiler_error("Assignment for undefined variable.");
 		}
-		
-		llvm::AllocaInst* allocaInst = llvm::dyn_cast<llvm::AllocaInst>(variable);
-		if (!allocaInst) {
-			return log_compiler_error("Variable was not correctly created using alloca.");
+
+
+		Type* val_type = val->getType();
+
+		Type* var_type;
+		if (get_type() == type_nat) {
+			if (!variable) {
+				variable = g_named_values[lhse->get_name()].val;
+			}
+			var_type = variable->getType();
+		}
+		else {
+			AllocaInst* allocaInst = dyn_cast<AllocaInst>(variable);
+			if (!allocaInst) {
+				return log_compiler_error("Variable was not correctly created using alloca.");
+			}
+			var_type = allocaInst->getAllocatedType();
 		}
 
-		llvm::Type* var_type = allocaInst->getAllocatedType();
-
-
 		//std::cout << "Assign Check: " << var_type->getTypeID() << '\t' << val->getType()->getTypeID() << int(val->getType()->isPointerTy()) << std::endl;
+		std::cout << var_type->getTypeID() << std::endl;
+		std::cout << val_type->getTypeID() << std::endl;
+		bool var_nat = (var_type->isPointerTy() && lhs->get_type() == type_nat);
+		bool val_nat = (val_type->isPointerTy() && rhs->get_type() == type_nat);
 
-
-		if (!(var_type->isIntegerTy()) && !(var_type->isFloatingPointTy())) {
+		if (!(var_type->isIntegerTy() || var_type->isFloatingPointTy() || var_nat)) {
 			return log_compiler_error("Invalid assignment: variable is not a valid type.");
 		}
 
-		if (!(val->getType()->isIntegerTy()) && !(val->getType()->isFloatingPointTy())) {
+		if (!(val_type->isIntegerTy() || val_type->isFloatingPointTy() || val_nat)) {
 			return log_compiler_error("Invalid assignment: value is not a valid type.");
 		}
 
 		if (
-			(var_type->isIntegerTy() && !(val->getType()->isIntegerTy())) ||
-			(var_type->isFloatingPointTy() && !(val->getType()->isFloatingPointTy()))
+			(var_type->isIntegerTy() && !(val_type->isIntegerTy())) ||
+			(var_type->isFloatingPointTy() && !(val_type->isFloatingPointTy())) ||
+			(var_nat && !val_nat)
 		) {
 			return log_compiler_error("Invalid assignment: type of value is different from type of variable.");
 		}
 
+		if (var_nat) {
+			//nat requires a memcpy
+			g_builder->CreateMemCpy(
+				variable,
+				llvm::MaybeAlign(4),
+				val,
+				llvm::MaybeAlign(4),
+				g_max_nat_bits/8
+			);
+		}
+		else {
+			//primitive requires a store
+			g_builder->CreateStore(val, variable);
+		}
 
-		// Removed this as `g_var_names` as the variables may be flushed at this
-		// point
-		// // ensure the variable is in local store
-		// if (g_var_names.find(lhse->get_name()) == g_var_names.end()) {
-		// 	return log_compiler_error(
-		// 		"variable found in `g_named_values` but not in `g_var_names`"
-		// 	);
-		// }
-
-		// NameKeywords nk = g_var_names[lhse->get_name()];
-
-		// LocalType type_rhs = rhs->get_type();
-
-		// if (nk.type != type_rhs) {
-		// 	return log_compiler_error(
-		// 		"assigned value type is different from variable type"
-		// 	);
-		// }
-
-
-		g_builder->CreateStore(val, variable);
 		g_named_values[lhse->get_name()].val = val;
 		return val;
 	}
@@ -993,14 +1298,25 @@ namespace AST {
 				type_lhs = type_double;
 				L = g_builder->CreateSIToFP(L, g_builder->getDoubleTy(), "casttmp");
 			}
+			else if (type_lhs == type_int && type_rhs == type_nat) {
+				type_lhs = type_nat;
+				L = cast_int_to_nat(L);
+			}
+			else if (type_lhs == type_nat && type_rhs == type_int) {
+				type_rhs = type_nat;
+				//if R is a negative integer, this will cast R to an unsigned 32-bit unsigned integer (i.e. -1 becomes 0xffffffff)
+				//and then it will perform the extension.
+				R = cast_int_to_nat(R);
+			}
 			else {
 				//cannot infer typecast
+				//in particular, note that we can't typecast doubles to nats, nats to doubles, or nats to ints.
 				log_compiler_error("Incompatible types: ");
 				fprintf(stderr, "\tLHS: %i, RHS: %i\n", type_lhs, type_rhs);
 				return nullptr;
 			}
 		}
-		//Now, L and R **must** have the same type 
+		//Now, L and R **must** have the same type
 		if (L->getType()->getTypeID() != R->getType()->getTypeID()) {
 			log_compiler_error("Typecasting was unsuccessful. Helpful information is provided below.");
 			fprintf(
@@ -1070,13 +1386,22 @@ namespace AST {
 
 		FunctionKeywords fun_signature = g_fun_names[callee];
 
+		bool uses_sret = (get_type() == type_nat);
+		Type* return_ty = local_type_to_llvm(get_type());
+
 		// If argument mismatch error.
-		if (callee_f->arg_size() != args.size() || callee_f->arg_size() != fun_signature.args.size()) {
+		if (callee_f->arg_size() - uses_sret != args.size() || callee_f->arg_size() - uses_sret != fun_signature.args.size()) {
 			return log_compiler_error("Incorrect number of arguments passed");
 		}
 
 		std::vector<Value*> args_v;
-		for (size_t i = 0, e = args.size(); i != e; ++i) {
+		Value* sret_result = nullptr;
+		if (uses_sret) {
+			sret_result = g_builder->CreateAlloca(return_ty, nullptr, "sret_result");
+			args_v.push_back(sret_result);
+		}
+
+		for (size_t i = 0; i < args.size(); ++i) {
 			//verify that function call matches function signature at argument i
 			NameKeywords expected = fun_signature.args[i];
 			if (args[i]->get_type() != expected.type) {
@@ -1087,13 +1412,20 @@ namespace AST {
 			}
 
 			//argument i matches, we can codegen it and add it to the call
-			args_v.push_back(args[i]->codegen());
+			Value* arg_v = args[i]->codegen();
+			if (!arg_v) {
+				return nullptr;
+			}
+			args_v.push_back(arg_v);
 			if (!args_v.back()) {
 				return nullptr;
 			}
 		}
 
-		return g_builder->CreateCall(callee_f, args_v, "calltmp");
+		Value* call = g_builder->CreateCall(callee_f, args_v, "calltmp");
+		//if the function expects to return a nat, then we need to load the return value stored in sret_result
+		//return uses_sret ? g_builder->CreateLoad(return_ty, sret_result, "load_ret") : call;
+		return uses_sret ? sret_result : call;
 	}
 
 	// PrototypeAST - This class represents the "prototype" for a function,
@@ -1101,7 +1433,6 @@ namespace AST {
 	// implicitly the number of arguments the function takes).
 	class PrototypeAST : public ExprAST {
 		std::string name;
-		std::vector<std::string> args; //this will likely need to contain more than just the name of arguments
 		std::map<std::string, NameKeywords> arg_types;
 		uint8_t scope;
 
@@ -1140,6 +1471,8 @@ namespace AST {
 			scope = g_scope;
 		}
 
+		std::vector<std::string> args; //this will likely need to contain more than just the name of arguments
+
 		Function* codegen() override;
 
 		const std::string& get_name() const { return name; }
@@ -1151,22 +1484,43 @@ namespace AST {
 
 	Function* PrototypeAST::codegen() {
 		// Make the function type:  double(double,double) etc.
-		std::vector<Type*> Args(args.size());
+		std::vector<Type*> Args;
+
+		// Handle struct return types with sret
+		bool uses_sret = (get_type() == type_nat);
+		Type* llvm_type = uses_sret ? Type::getVoidTy(*g_llvm_context) : local_type_to_llvm(get_type());
+
+		if (uses_sret) {
+			Type* sret_ty = local_type_to_llvm(get_type());
+			Args.push_back(PointerType::getUnqual(sret_ty));  // hidden sret param at beginning of function
+		}
+
 		for (int i = 0; i < args.size(); ++i) {
 			std::string arg = args[i];
 			LocalType arg_type = arg_types[arg].type;
-			Args[i] = local_type_to_llvm(arg_type);
+			Type* llvm_ty = local_type_to_llvm(arg_type);
+			if (arg_type == type_nat) {
+				Args.push_back(PointerType::getUnqual(llvm_ty));  // pass struct by pointer
+			}
+			else {
+				Args.push_back(llvm_ty);  // primitive types
+			}
 		}
 
-		Type* llvm_type = local_type_to_llvm(get_type());
 		FunctionType* FT = FunctionType::get(llvm_type, Args, false);
-
 		Function* F = Function::Create(FT, Function::ExternalLinkage, name, g_module.get());
 
 		// Set names for all arguments.
 		unsigned idx = 0;
-		for (auto& arg : F->args())
-			arg.setName(args[idx++]);
+		if (uses_sret) {
+			// first argument is the result pointer
+			F->addParamAttr(0, Attribute::StructRet);
+			F->getArg(0)->setName("sret_result");
+			idx = 1;
+		}
+		for (size_t i = 0; i < args.size(); ++i) {
+			F->getArg(idx++)->setName(args[i]);
+		}
 
 		return F;
 	}
@@ -1200,9 +1554,10 @@ namespace AST {
 			return (Function*)log_compiler_error("Function cannot be redefined.");
 		}
 
+		bool uses_sret = (proto->get_type() == type_nat);
 
 		//verify that the signature of f is the same as the prototype
-		if (f->arg_size() != proto->get_nargs()) {
+		if (f->arg_size() - uses_sret != proto->get_nargs()) {
 			return (Function*)log_compiler_error("Signature does not match forward definition");
 		}
 		size_t proto_iter = 0;
@@ -1210,20 +1565,23 @@ namespace AST {
 			//f and proto have the same number of args; check if they also have the same names
 			// TODO: need to edit this to check types too
 			// printf("f_iter->getType(): %s \n", f_iter->getType());
+			if (uses_sret) {
+				//the first argument of f is a return pointer sret.
+				continue;
+			}
 			if (f_iter->getName().str() != proto->get_arg_by_idx(proto_iter)) {
 				return (Function*)log_compiler_error("Signature does not match forward definition");
 			}
 			++proto_iter;
 		}
-		// Argument::
 		
 		// Create a new basic block to start insertion into.
 		BasicBlock* bb = BasicBlock::Create(*g_llvm_context, "entry", f);
 		g_builder->SetInsertPoint(bb);
 
-
 		flush_named_values_map(proto->get_scope());
 		// Store the g_named_values in the current block
+		// Why are we bending over backwards to support globals
 		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
 			debug_log("just enterd 1st for\n");
 			Type* llvm_type = local_type_to_llvm(it->second.type);
@@ -1242,31 +1600,41 @@ namespace AST {
 			alloca_prop.val = val;
 			g_named_values[it->first] = alloca_prop;
 		}
+
 		// Add function arguments to the store 
-		for (auto& arg : f->args()) {
+		Argument* sret_arg = uses_sret ? f->getArg(0) : nullptr;
+		unsigned idx = uses_sret ? 1 : 0;
+		for (const auto& arg_name : proto->args) {
+			Argument& arg = *(f->getArg(idx++));
 			//TODO: ensure that the type here works well (is it correct type?)
-			AllocaInst* alloca = create_entry_block_alloca(f, arg.getName(), arg.getType());
-			g_builder->CreateStore(&arg, alloca);
-			
+
 			AllocaProperties alloca_prop;
-			alloca_prop.alloca = alloca;
-			// The scope inside the function is the scope the function is in + 1
+			if (arg.getType()->isPointerTy()) {
+				//nat, which is already a pointer.
+				alloca_prop.alloca = nullptr;
+			}
+			else {
+				AllocaInst* alloca = create_entry_block_alloca(f, arg.getName(), arg.getType());
+				g_builder->CreateStore(&arg, alloca);
+
+				alloca_prop.alloca = alloca;
+			}
 			alloca_prop.scope = proto->get_scope() + 1;
 			std::string arg_name = arg.getName().str();
 			alloca_prop.type = proto->get_arg_type(arg_name);
 			alloca_prop.val = &arg;
-			g_named_values[std::string(arg.getName())] = alloca_prop;
+			g_named_values[arg.getName().str()] = alloca_prop;
 		}
 		
 		if (Value* retval = body->codegen()) {
-			//retval->print(llvm::outs());
-
-			// Finish off the function.
-			g_builder->CreateRet(retval);
-
-			// Validate the generated code, checking for consistency.
-			// Currently this isn't being used... is something missing?
-			//llvm::Function* test = f;
+			if (uses_sret) {
+				// Store return value to sret pointer
+				g_builder->CreateMemCpy(sret_arg, MaybeAlign(4), retval, MaybeAlign(4), g_max_nat_bits/8);
+				g_builder->CreateRetVoid();
+			}
+			else {
+				g_builder->CreateRet(retval);
+			}
 
 			verifyFunction(*f);
 
@@ -1287,7 +1655,6 @@ namespace AST {
 
 		// Error reading body, remove function.
 		f->eraseFromParent();
-
 		flush_named_values_map(proto->get_scope());
 		return nullptr;
 	}
@@ -1324,11 +1691,11 @@ namespace AST {
 			return log_compiler_error("Invalid type generated from block.");
 		}
 
-		debug_log("printing before flushing in scope block, g_scope: %i, this->scope: %i\n", g_scope, this->scope);
-		print_map_keys(g_named_values);
-		flush_named_values_map(scope);
-		debug_log("printing after flushing in scope block\n");
-		print_map_keys(g_named_values);
+		//debug_log("printing before flushing in scope block, g_scope: %i, this->scope: %i\n", g_scope, this->scope);
+		//print_map_keys(g_named_values);
+		//flush_named_values_map(scope);
+		//debug_log("printing after flushing in scope block\n");
+		//print_map_keys(g_named_values);
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }
@@ -1511,6 +1878,9 @@ static int get_tok() {
 		if (g_identifier_str == "while") {
 			return tok_while;
 		}
+		if (g_identifier_str == "set_max_nat_bits") {
+			return tok_setnat;
+		}
 
 		for (auto& type:g_type_map) {
 			if (g_identifier_str == type.first) {
@@ -1566,8 +1936,15 @@ static int get_tok() {
 			g_number_str += g_line[g_line_idx];
 			++g_line_idx;
 		}
+		bool is_nat = false;
+		if (g_line[g_line_idx] == 'n' && !seen_period) {
+			//natural number! Defined as an integer
+			is_nat = true;
+			++g_line_idx;
+		}
 
 		g_number_has_period = seen_period;
+		g_number_is_nat = is_nat;
 		//indicate that g_identifier_str is filled
 		return tok_num;
 	}
@@ -1644,6 +2021,15 @@ static std::unique_ptr<ExprAST> parse_double_expr() {
 	return result;
 }
 
+// parse_nat_expr()
+//	Parse a natural number expression
+static std::unique_ptr<ExprAST> parse_nat_expr() {
+	auto result = std::make_unique<NatAST>(LocalType::type_nat, g_number_str, g_sectype);
+	g_sectype = SECURITY_MIN; //used up the security type, reset
+	get_next_tok(); // consume the number
+	return result;
+}
+
 // parse_int_expr()
 //	Parse an integer expression
 static std::unique_ptr<ExprAST> parse_int_expr() {
@@ -1663,9 +2049,10 @@ static std::unique_ptr<ExprAST> parse_num_expr() {
 	if (g_number_has_period) {
 		return parse_double_expr();
 	}
-	else {
-		return parse_int_expr();
+	if (g_number_is_nat) {
+		return parse_nat_expr();
 	}
+	return parse_int_expr();
 }
 
 // parse_paren_expr()
@@ -1903,6 +2290,47 @@ static std::unique_ptr<ExprAST> parse_while_expr() {
 	return std::make_unique<WhileExprAST>(std::move(condition), std::move(body));
 }
 
+static std::unique_ptr<ExprAST> parse_setnat_expr() {
+	// setnat ::= set_max_nat_bits ( int >= 32 )
+
+	get_next_tok();  // eat the "set_max_nat_bits"
+	if (g_scope != 0) {
+		return log_syntax_error("Maximum nat size may only be adjusted in global scope.");
+	}
+	if (g_seen_nat) {
+		return log_syntax_error("Maximum nat size may only be adjusted before any nat definition.");
+	}
+
+	if (g_cur_tok != '(') {
+		return log_syntax_error("Expected parenthesis '(' after set_max_nat_bits built-in function.");
+	}
+	get_next_tok(); // eat '('
+	if (g_cur_tok != tok_num || g_number_has_period || g_number_is_nat) {
+		return log_syntax_error("Only integer literals may be passed to set_max_nat_bits.");
+	}
+
+	int d = std::stoi(g_number_str); // `g_number_str` is set by lexer
+	get_next_tok(); // eat integer
+
+	if (d < 32) {
+		return log_syntax_error("The maximum number of bits in a nat must be at least 32.");
+	}
+	if (d % 32 != 0) {
+		return log_syntax_error("The maximum number of bits in a nat must be divisible by 32.");
+	}
+
+	if (g_cur_tok != ')') {
+		return log_syntax_error("Expected parenthesis ')' after set_max_nat_bits argument.");
+	}
+	get_next_tok(); //eat ')'
+
+	//successful setnat function call
+	g_max_nat_bits = d;
+
+	//returning nullptr causes an error because it flags the top level expression as having failed.
+	//it makes reasonable sense to just return the new maximum nat bit size.
+	return std::make_unique<IntegerAST>(LocalType::type_int, d, SECURITY_MIN);
+}
 
 // parse_primary()
 //	Determines the type of expression to parse and calls the appropriate handler
@@ -1928,6 +2356,8 @@ static std::unique_ptr<ExprAST> parse_primary() {
 		return parse_conditional_expr();
 	case tok_while:
 		return parse_while_expr();
+	case tok_setnat:
+		return parse_setnat_expr();
 	case ';':
 		//ignore semicolons
 		get_next_tok(); //eat ';'
@@ -2038,7 +2468,15 @@ static std::unique_ptr<ExprAST> parse_binop_rhs(int expr_prec, std::unique_ptr<E
 			else if (lhs->get_type() == type_int && rhs->get_type() == type_double) {
 				use_type = type_double;
 			}
+			else if (lhs->get_type() == type_int && rhs->get_type() == type_nat) {
+				use_type = type_nat;
+			}
+			else if (lhs->get_type() == type_nat && rhs->get_type() == type_int) {
+				use_type = type_nat;
+			}
 			else {
+				//in particular, we should not do operations between doubles and nats
+				log_compiler_error("Operand mismatch could not be resolved.");
 				use_type = type_unsupported;
 			}
 		}
@@ -2213,7 +2651,7 @@ static void handle_function() {
 	auto fn_ptr = parse_function();
 	if (!fn_ptr) {
 		//skip token for error recovery
-		fprintf(stderr, "[%lu, %lu]: SyntaxError: Attempted and failed to parse function.\n", g_line_count, g_line_idx);
+		log_syntax_error("Attempted and failed to parse a function.");
 		get_next_tok();
 		return;
 	}
@@ -2224,7 +2662,7 @@ static void handle_extern() {
 	auto extern_ptr = parse_extern();
 	if (!extern_ptr) {
 		//skip token for error recovery
-		fprintf(stderr, "[%lu, %lu]: SyntaxError: Attempted and failed to parse an external function.\n", g_line_count, g_line_idx);
+		log_syntax_error("Attempted and failed to parse an external function.");
 		get_next_tok();
 		return;
 	}
@@ -2236,7 +2674,7 @@ static void handle_top_level_expression() {
 	auto tle_ptr = parse_top_level_expression();
 	if (!tle_ptr) {
 		//skip token for error recovery
-		fprintf(stderr, "[%lu, %lu]: SyntaxError: Attempted and failed to parse a top level expression.\n", g_line_count, g_line_idx);
+		log_syntax_error("Attempted and failed to parse a top level expression.");
 		get_next_tok();
 		return;
 	}

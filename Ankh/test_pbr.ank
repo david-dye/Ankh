@@ -1,0 +1,5 @@
+//test pass by reference
+
+int foo(int x) {
+	x = 7;
+}

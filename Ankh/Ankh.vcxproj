@@ -47,9 +47,12 @@
     <None Include="test_if.ank" />
     <None Include="test_if_secure.ank" />
     <None Include="test_multiple_assign.ank" />
+    <None Include="test_nat.ank" />
+    <None Include="test_nat_ops.ank" />
     <None Include="test_ops.ank" />
     <None Include="test_optimization.ank" />
     <None Include="test_parsing_numbers_types.ank" />
+    <None Include="test_pbr.ank" />
     <None Include="test_same_name_variable_different_context.ank" />
     <None Include="test_scope.ank" />
     <None Include="test_security.ank" />
