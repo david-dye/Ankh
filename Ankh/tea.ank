@@ -1,0 +1,55 @@
+
+set_max_nat_bits(32)
+
+int tea_encrypt($1 nat v1, $1 nat v2, $1 nat k1, $1 nat k2, $1 nat k3, $1 nat k4) {
+	//=========
+	// Setup
+	//=========
+	nat sum;
+	sum = 0n;
+	int i;
+	nat delta;
+	delta = 2654435769n;
+	
+	//=========
+	// Encryption
+	//=========
+	while (i < 32) {
+		sum = sum + delta;
+		v1 = v1 + (((v2<<4) + k1) ^ (v2 + sum) ^ ((v2>>5) + k2));
+		v2 = v2 + (((v1<<4) + k3) ^ (v1 + sum) ^ ((v1>>5) + k4));
+		i = i + 1;
+	}
+
+	0; //dummy return. At this point, v1 and v2 are encrypted
+}
+
+int tea_decrypt(nat v1, nat v2, $1 nat k1, $1 nat k2, $1 nat k3, $1 nat k4, $1 nat ret1, $1 nat ret2) {
+	//Note that v1 and v2 can be public inputs, but ret1 and ret2 must be secret!
+
+	//=========
+	// Setup
+	//=========
+	nat sum;
+	sum = 3337565984n;
+	int i;
+	nat delta;
+	delta = 2654435769n;
+
+	ret1 = v1; //this is currently broken
+	ret2 = v2;
+	
+	//=========
+	// Decryption
+	//=========
+	while (i < 32) {
+		ret2 = ret2 - (((ret1<<4) + k3) ^ (ret1 + sum) ^ ((ret1>>5) + k4));
+		ret1 = ret1 - (((ret2<<4) + k1) ^ (ret2 + sum) ^ ((ret2>>5) + k2));
+		//v2 = v2 - (((v1<<4) + k3) ^ (v1 + sum) ^ ((v1>>5) + k4));
+		//v1 = v1 - (((v2<<4) + k1) ^ (v2 + sum) ^ ((v2>>5) + k2));
+		sum = sum - delta;
+		i = i + 1;
+	}
+
+	0; //dummy return. At this point, ret1 and ret2 contain the decrypted values of v1 and v2.
+}

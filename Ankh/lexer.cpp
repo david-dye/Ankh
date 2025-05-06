@@ -1242,6 +1242,7 @@ namespace AST {
 		Type* var_type;
 		if (get_type() == type_nat) {
 			if (!variable) {
+				//argument, not local variable
 				variable = g_named_values[lhse->get_name()].val;
 			}
 			var_type = variable->getType();
@@ -1255,8 +1256,8 @@ namespace AST {
 		}
 
 		//std::cout << "Assign Check: " << var_type->getTypeID() << '\t' << val->getType()->getTypeID() << int(val->getType()->isPointerTy()) << std::endl;
-		std::cout << var_type->getTypeID() << std::endl;
-		std::cout << val_type->getTypeID() << std::endl;
+		//std::cout << var_type->getTypeID() << std::endl;
+		//std::cout << val_type->getTypeID() << std::endl;
 		bool var_nat = (var_type->isPointerTy() && lhs->get_type() == type_nat);
 		bool val_nat = (val_type->isPointerTy() && rhs->get_type() == type_nat);
 
@@ -1289,9 +1290,10 @@ namespace AST {
 		else {
 			//primitive requires a store
 			g_builder->CreateStore(val, variable);
+			//only update the value if it is a primitive; the pointer's memory location does not change
+			g_named_values[lhse->get_name()].val = val;
 		}
 
-		g_named_values[lhse->get_name()].val = val;
 		return val;
 	}
 
