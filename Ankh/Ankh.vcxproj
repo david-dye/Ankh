@@ -25,8 +25,10 @@
     <None Include="call_global_from_local.ank" />
     <None Include="get_max.ank" />
     <None Include="mod_exp.ank" />
+    <None Include="tea.ank" />
     <None Include="test_assign.ank" />
     <None Include="test_assign_var_to_var.ank" />
+    <None Include="test_binops.ank" />
     <None Include="test_fail_assign_var_to_var.ank" />
     <None Include="test_binop_with_different_types.ank" />
     <None Include="test_blocks.ank" />
@@ -46,9 +48,14 @@
     <None Include="test_function_return.ank" />
     <None Include="test_if.ank" />
     <None Include="test_if_secure.ank" />
+    <None Include="test_multiple_assign.ank" />
+    <None Include="test_nat.ank" />
+    <None Include="test_nat_ops.ank" />
     <None Include="test_ops.ank" />
     <None Include="test_optimization.ank" />
     <None Include="test_parsing_numbers_types.ank" />
+    <None Include="test_pbr.ank" />
+    <None Include="test_pbr2.ank" />
     <None Include="test_same_name_variable_different_context.ank" />
     <None Include="test_scope.ank" />
     <None Include="test_security.ank" />

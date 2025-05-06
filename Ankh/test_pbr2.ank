@@ -1,0 +1,8 @@
+
+set_max_nat_bits(32)
+
+int foo(nat x, nat y) {
+	y = x;
+	y = y + 2;
+	0;
+}
