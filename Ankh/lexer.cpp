@@ -45,7 +45,7 @@
 //TODO: When implementing control flow, make sure to use code form chapter 7
 //TODO: this includes ForExprAST::codegen()
 
-#define DEBUG
+// #define DEBUG
 
 #ifdef DEBUG
 void debug_log(const char* format, ...) {
@@ -466,10 +466,7 @@ namespace AST {
 
 	Value* VariableExprAST::codegen() {
 		//assumes the variable has already been emitted somewhere and its value is available.
-		// debug_log("just enterd var codeg\n");
 		AllocaProperties props = g_named_values[name];
-		// print_map_keys(g_named_values);
-		// debug_log("after accessing name in g_named_values\n");
 
 		AllocaInst* alloca = props.alloca;
 
@@ -527,12 +524,6 @@ namespace AST {
 
 		AllocaProperties alloca_prop;
 		alloca_prop.alloca = alloca;
-		if (!alloca) {
-			debug_log("in localvar codegen, !alloca is True");
-		}
-		else {
-			debug_log("in localvar codegen, !alloca is False");
-		}
 		alloca_prop.scope = scope;
 		alloca_prop.type = get_type();
 		alloca_prop.val = default_val;
@@ -1225,15 +1216,10 @@ namespace AST {
 		flush_named_values_map(proto->get_scope());
 		// Store the g_named_values in the current block
 		for (auto it = g_named_values.begin(); it != g_named_values.end(); ++it) {
-			debug_log("just enterd 1st for\n");
 			Type* llvm_type = local_type_to_llvm(it->second.type);
-			debug_log("after 1st line\n");
 			AllocaInst* alloca = create_entry_block_alloca(f, it->first, llvm_type);
-			debug_log("after 2 line\n");
 			Value* val = it->second.val;
-			debug_log("after 3 line\n");
 			g_builder->CreateStore(val, alloca);
-			debug_log("after 4 line\n");
 
 			AllocaProperties alloca_prop;
 			alloca_prop.alloca = alloca;
@@ -1324,11 +1310,7 @@ namespace AST {
 			return log_compiler_error("Invalid type generated from block.");
 		}
 
-		debug_log("printing before flushing in scope block, g_scope: %i, this->scope: %i\n", g_scope, this->scope);
-		print_map_keys(g_named_values);
 		flush_named_values_map(scope);
-		debug_log("printing after flushing in scope block\n");
-		print_map_keys(g_named_values);
 		return last; // this is the return value from the block, and thus also the function if the block is around a function.
 	}
 }

@@ -31,4 +31,12 @@ One thing to check is to see if the scope should be 0 or 1 inside the function, 
 So it's  saying that a variable defined before the block, c, is out of scope althoug we are dereferencing after the block. My guess is that we are flushing it when we are flushing the scoped block.
 Is the relevant variable g_scope or this->scope?
 It's saying that this->scope is 0 but I don't think this is true, or should this->scope be the scope that the block lives in ?
-So the problem seems to be that the alloca is not defined.I fixed one issue in flash_named variables where it was flushing based on g_scope rather than the argument 
+So the problem seems to be that the alloca is not defined.I fixed one issue in flash_named variables where it was flushing based on g_scope rather than the argument scope
+I think I understand now why y was changing scope: it was being flush after the basic block but later when we were referencing it, it was being redefined 
+Problem fixed: it was that bug with flush name values
+
+Prof. Chong meeting:
+- if the function warns on input of secret values o. 
+- possible encryption algorithsm to iincorporate: tiny encrpytion {something}
+- fuzz testing idea.
+- termination should not reveal information.

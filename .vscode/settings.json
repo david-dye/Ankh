@@ -61,6 +61,8 @@
     "istream": "cpp",
     "*.def": "cpp",
     "vector": "cpp",
-    "map": "cpp"
+    "map": "cpp",
+    "iostream": "cpp",
+    "chrono": "cpp"
   }
 }
