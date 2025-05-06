@@ -27,6 +27,7 @@
     <None Include="mod_exp.ank" />
     <None Include="test_assign.ank" />
     <None Include="test_assign_var_to_var.ank" />
+    <None Include="test_binops.ank" />
     <None Include="test_fail_assign_var_to_var.ank" />
     <None Include="test_binop_with_different_types.ank" />
     <None Include="test_blocks.ank" />

@@ -69,15 +69,20 @@ extern "C" {
     void sub(nat* ret, nat* a, nat* b);
     void assign(nat* ret, nat* a);
     int add_in_place(nat* a, nat* b);
+    void bsl(nat* ret, nat* a, int b);
+    void bsr(nat* ret, nat* a, int b);
+    void bwxor(nat* ret, nat* a, nat* b);
+    void bwor(nat* ret, nat* a, nat* b);
+    void bwand(nat* ret, nat* a, nat* b);
 }
 
 int main() {
     nat a = {};
     nat b = {};
     nat ret = {};
-    a.limbs[0] = 80;
+    a.limbs[0] = 42;
     a.limbs[3] = 689;
-    b.limbs[0] = 41;
+    b.limbs[0] = 42;
     b.limbs[1] = 7;
     
     max(&ret, &a, &b);
@@ -120,6 +125,48 @@ int main() {
     printf("Correct assignment should copy a = ");
     print_nat(a);
     printf(" here: ");
+    print_nat(ret);
+    printf(".\n");
+
+    int bs_op = 40;
+    bsl(&ret, &a, bs_op);
+    printf("Bitshift left of ");
+    print_nat(a);
+    printf(" by %i : ", bs_op);
+    print_nat(ret);
+    printf(".\n");
+
+    bsr(&ret, &a, bs_op);
+    printf("Bitshift right of ");
+    print_nat(a);
+    printf(" by %i : ", bs_op);
+    print_nat(ret);
+    printf(".\n");
+
+    bwxor(&ret, &a, &b);
+    printf("Bitwise Xor of ");
+    print_nat(a);
+    printf(" and ");
+    print_nat(b);
+    printf(" is ");
+    print_nat(ret);
+    printf(".\n");
+
+    bwor(&ret, &a, &b);
+    printf("Bitwise Or of ");
+    print_nat(a);
+    printf(" and ");
+    print_nat(b);
+    printf(" is ");
+    print_nat(ret);
+    printf(".\n");
+
+    bwand(&ret, &a, &b);
+    printf("Bitwise And of ");
+    print_nat(a);
+    printf(" and ");
+    print_nat(b);
+    printf(" is ");
     print_nat(ret);
     printf(".\n");
 

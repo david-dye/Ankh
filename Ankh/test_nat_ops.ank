@@ -32,3 +32,23 @@ int add_in_place(nat x, nat y) {
 	x = x + y;
 	0;
 }
+
+nat bsl(nat x, int y) {
+	x << y;
+}
+
+nat bsr(nat x, int y) {
+	x >> y;
+}
+
+nat bwxor(nat x, nat y) {
+	x ^ y;
+}
+
+nat bwor(nat x, nat y) {
+	x | y;
+}
+
+nat bwand(nat x, nat y) {
+	x & y;
+}
