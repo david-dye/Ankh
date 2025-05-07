@@ -60,5 +60,7 @@
     <None Include="test_binops.ank" />
     <None Include="tea.ank" />
     <None Include="test_pbr2.ank" />
+    <None Include="test_modpow.ank" />
+    <None Include="rsa.ank" />
   </ItemGroup>
 </Project>
