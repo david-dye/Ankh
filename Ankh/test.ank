@@ -3,3 +3,6 @@ double no_opt f(int x) {
     y = 2.2;
     x / y;
 }
+
+double z;
+z = f(2);
