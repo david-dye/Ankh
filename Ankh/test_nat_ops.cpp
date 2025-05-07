@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include <algorithm>
+#include <random>
 
 const uint32_t g_max_nat_bits = 256;
 const uint32_t num_limbs = g_max_nat_bits / 32;
@@ -67,6 +68,8 @@ extern "C" {
     void add(nat* ret, nat* a, nat* b);
     void add10(nat* ret, nat* a, nat* b);
     void sub(nat* ret, nat* a, nat* b);
+    void mul(nat* ret, nat* a, nat* b);
+    void mod(nat* ret, nat* a, nat* b);
     void assign(nat* ret, nat* a);
     int add_in_place(nat* a, nat* b);
     void bsl(nat* ret, nat* a, int b);
@@ -80,10 +83,17 @@ int main() {
     nat a = {};
     nat b = {};
     nat ret = {};
-    a.limbs[0] = 42;
-    a.limbs[3] = 689;
-    b.limbs[0] = 42;
-    b.limbs[1] = 7;
+    //a.limbs[0] = 42;
+    //a.limbs[3] = 689;
+    //b.limbs[0] = 42;
+    //b.limbs[1] = 7;
+    std::mt19937 gen(427742); // Seeded Mersenne Twister engine
+    std::uniform_int_distribution<uint32_t> dist(0, UINT32_MAX);
+
+    for (int i = 0; i < num_limbs; ++i) {
+        a.limbs[i] = dist(gen);
+        b.limbs[i] = dist(gen);
+    }
     
     max(&ret, &a, &b);
     printf("Maximum between ");
@@ -118,6 +128,24 @@ int main() {
     printf(" and ");
     print_nat(b);
     printf(" is ");
+    print_nat(ret);
+    printf(".\n");
+
+    mul(&ret, &a, &b);
+    printf("Product of ");
+    print_nat(a);
+    printf(" and ");
+    print_nat(b);
+    printf(" is ");
+    print_nat(ret);
+    printf(".\n");
+
+    mod(&ret, &a, &b);
+    printf("Modulus: ");
+    print_nat(a);
+    printf(" %% ");
+    print_nat(b);
+    printf(" = ");
     print_nat(ret);
     printf(".\n");
 

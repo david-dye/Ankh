@@ -22,7 +22,15 @@ nat sub(nat x, nat y) {
 	x - y;
 }
 
-nat no_opt assign(nat x) {
+nat mul(nat x, nat y) {
+	x * y;
+}
+
+nat mod(nat x, nat y) {
+	x % y;
+}
+
+nat assign(nat x) {
 	nat y;
 	y = x;
 	y;

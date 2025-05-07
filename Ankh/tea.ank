@@ -1,5 +1,10 @@
 
-set_max_nat_bits(64)
+// ankh tea.ank
+// clang++ -m64 tea.cpp tea.o -o tea.exe
+// mod_exp
+
+// set the number of bits in a nat to 32, i.e. uint32_t
+set_max_nat_bits(32)
 
 int tea_encrypt($1 nat v1, $1 nat v2, $1 nat k1, $1 nat k2, $1 nat k3, $1 nat k4) {
 	//=========
@@ -36,7 +41,7 @@ int tea_decrypt(nat v1, nat v2, $1 nat k1, $1 nat k2, $1 nat k3, $1 nat k4, $1 n
 	nat delta;
 	delta = 2654435769n;
 
-	ret1 = v1; //this is currently broken
+	ret1 = v1;
 	ret2 = v2;
 	
 	//=========
@@ -45,8 +50,6 @@ int tea_decrypt(nat v1, nat v2, $1 nat k1, $1 nat k2, $1 nat k3, $1 nat k4, $1 n
 	while (i < 32) {
 		ret2 = ret2 - (((ret1<<4) + k3) ^ (ret1 + sum) ^ ((ret1>>5) + k4));
 		ret1 = ret1 - (((ret2<<4) + k1) ^ (ret2 + sum) ^ ((ret2>>5) + k2));
-		//v2 = v2 - (((v1<<4) + k3) ^ (v1 + sum) ^ ((v1>>5) + k4));
-		//v1 = v1 - (((v2<<4) + k1) ^ (v2 + sum) ^ ((v2>>5) + k2));
 		sum = sum - delta;
 		i = i + 1;
 	}

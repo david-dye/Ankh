@@ -1,0 +1,9 @@
+
+//test modpow built-in function
+//modpow(a, b, c) efficiently computes ab mod c in constant time
+//note that c cannot be even.
+
+set_max_nat_bits(64);
+
+modpow(12n, 3n, 3n);
+modpow(500001n, 64n, 7n);

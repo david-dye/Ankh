@@ -69,7 +69,7 @@ extern "C" {
 
 int main() {
     // Create a random number generator
-    std::mt19937 gen(42774277); // Seeded Mersenne Twister engine
+    std::mt19937 gen(427742); // Seeded Mersenne Twister engine
     std::uniform_int_distribution<uint32_t> dist(0, UINT32_MAX);
 
     nat v1 = { dist(gen) };

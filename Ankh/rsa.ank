@@ -1,0 +1,67 @@
+
+
+//implement RSA keygen and decryption
+
+set_max_nat_bits(256) //1024 bit precision, 512 bit size should be used for inputs
+
+$1 nat no_opt mod_exp_no_opt($1 nat a, $1 nat b, $1 nat c) {
+	// Returns a^b mod c
+
+	// Setup
+	$1 nat result;
+	result = 1n;
+	$1 nat base;
+	base = a % c;
+	int i;
+	i = 0;
+	$1 nat exp;
+	exp = b;
+	$1 nat use_iter;
+	use_iter = 0n;
+
+	// Compute using right-to-left binary method
+	while (i < 128) {
+		use_iter = exp % 2;
+		exp = exp >> 1;
+
+		//if we should use this iter, then result = (result * base ) % c. Otherwise result = result.
+		result = use_iter * ((result * base) % c) + (1 - use_iter) * result;
+
+		base = (base * base) % c;
+		i = i + 1;
+	}
+
+	// Return result
+	result;
+}
+
+$1 nat mod_exp_opt($1 nat a, $1 nat b, $1 nat c) {
+	// Returns a^b mod c
+
+	// Setup
+	$1 nat result;
+	result = 1n;
+	$1 nat base;
+	base = a % c;
+	int i;
+	i = 0;
+	$1 nat exp;
+	exp = b;
+	$1 nat use_iter;
+	use_iter = 0n;
+
+	// Compute using right-to-left binary method
+	while (i < 128) {
+		use_iter = exp % 2;
+		exp = exp >> 1;
+
+		//if we should use this iter, then result = (result * base ) % c. Otherwise result = result.
+		result = use_iter * ((result * base) % c) + (1 - use_iter) * result;
+
+		base = (base * base) % c;
+		i = i + 1;
+	}
+
+	// Return result
+	result;
+}
