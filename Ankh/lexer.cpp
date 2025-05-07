@@ -1942,10 +1942,11 @@ namespace AST {
 				alloca_prop.alloca = alloca;
 			}
 			alloca_prop.scope = proto->get_scope() + 1;
-			std::string arg_name = arg.getName().str();
-			alloca_prop.type = proto->get_arg_type(arg_name);
+			// std::string arg_name = arg.getName().str();
+			std::string arg_name_std = arg.getName().str();
+			alloca_prop.type = proto->get_arg_type(arg_name_std);
 			alloca_prop.val = &arg;
-			g_named_values[arg.getName().str()] = alloca_prop;
+			g_named_values[arg_name_std] = alloca_prop;
 		}
 		
 		if (Value* retval = body->codegen()) {
@@ -3226,7 +3227,8 @@ int main(int argc, char** argv) {
 
 	// TODO: check if this messes up optimizations
 	g_module->setDataLayout(target_machine->createDataLayout());
-	g_module->setTargetTriple(triple); //does this need to be triple.str() for Aghyad? If so, we need to do some ifdef nonsense.
+	// g_module->setTargetTriple(triple); // Windows version
+	g_module->setTargetTriple(target_spec); // Unix version
 
 	std::string input_filename(filename);
 	auto output_filename = (
