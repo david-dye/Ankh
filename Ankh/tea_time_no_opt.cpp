@@ -6,10 +6,11 @@
 #include <algorithm>
 #include <random>
 #include <numeric>
+#include <boost/multiprecision/cpp_int.hpp>
 
-const uint32_t g_max_nat_bits = 32;
+const uint32_t g_max_nat_bits = 1<<9;
 const uint32_t num_limbs = g_max_nat_bits / 32;
-// const uint32_t num_limbs = 1;
+using namespace boost::multiprecision;
 
 typedef struct {
     uint32_t limbs[num_limbs];
@@ -69,6 +70,29 @@ void print_nat(nat& input) {
     std::cout << result;
 }
 
+cpp_int get_random(std::mt19937* gen, uint32_t bits) {
+    cpp_int random_val = 0;
+    for (int i = 0; i < bits/64; ++i) {
+        cpp_int part = (*gen)();
+        random_val <<= 64;
+        random_val |= part;
+    }
+    return random_val;
+}
+
+void fill_nat(nat* n, cpp_int* c) {
+    for (int i = 0; i < num_limbs; ++i) {
+        unsigned int limb = (unsigned int)((*c) & 0xFFFFFFFF);
+        n->limbs[i] = limb;
+        *c >>= 32;
+    }
+}
+
+void fill_nat_random(nat* n, std::mt19937* gen) {
+    cpp_int random_val = get_random(gen, g_max_nat_bits);
+    fill_nat(n, &random_val);
+}
+
 int main() {
     // Create a random number generator
     int seed = 42774277;
@@ -80,12 +104,18 @@ int main() {
     // std::vector<double> total_time_opt
     // std::vector<double> total_time_no_opt;
     // for (int i = 0; i < 1; ++i) {
-    nat v1 = { dist(gen) };
-    nat v2 = { dist(gen) };
-    nat k1 = { dist(gen) };
-    nat k2 = { dist(gen) };
-    nat k3 = { dist(gen) };
-    nat k4 = { dist(gen) };
+    nat v1 = {};
+    nat v2 = {};
+    nat k1 = {};
+    nat k2 = {};
+    nat k3 = {};
+    nat k4 = {};
+    fill_nat_random(&v1, &gen);
+    fill_nat_random(&v2, &gen);
+    fill_nat_random(&k1, &gen);
+    fill_nat_random(&k2, &gen);
+    fill_nat_random(&k3, &gen);
+    fill_nat_random(&k4, &gen);
     nat ret1 = {};
     nat ret2 = {};
 

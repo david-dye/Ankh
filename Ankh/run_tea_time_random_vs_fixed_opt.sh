@@ -1,5 +1,5 @@
 #!/bin/bash
-NUM_ITER=1000
+NUM_ITER=20000
 
 echo "" > opt_fixed_output.csv
 echo "" > opt_random_output.csv
@@ -10,12 +10,12 @@ do
     # Randomly determine which program to run first (0 or 1)
     if [ $((RANDOM % 2)) -eq 0 ]; then
         # Run fixed version first
-        ./tea_time_opt >> "opt_fixed_output.csv"
+        ./tea_time_opt_fixed >> "opt_fixed_output.csv"
         ./tea_time_opt_random >> "opt_random_output.csv"
     else
         # Run random version first
         ./tea_time_opt_random >> "opt_random_output.csv"
-        ./tea_time_opt >> "opt_fixed_output.csv"
+        ./tea_time_opt_fixed >> "opt_fixed_output.csv"
     fi
 done
 

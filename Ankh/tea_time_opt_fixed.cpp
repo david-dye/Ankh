@@ -96,13 +96,13 @@ void fill_nat_random(nat* n, std::mt19937* gen) {
 }
 
 int main() {
-    std::random_device rd;
-    auto seed = rd();
+    // std::random_device rd;
+    // auto seed = rd();
     // Create a random number generator
+    auto seed = 42774277;
     std::mt19937 gen(seed); // Seeded Mersenne Twister engine
     // std::uniform_int_distribution<uint64_t> dist(0, UINT64_MAX);
 
-    //! still not getting larger than 32 bit ints
     nat v1 = {};
     nat v2 = {};
     nat k1 = {};
@@ -115,6 +115,7 @@ int main() {
     fill_nat_random(&k2, &gen);
     fill_nat_random(&k3, &gen);
     fill_nat_random(&k4, &gen);
+    
     nat ret1 = {};
     nat ret2 = {};
 

@@ -1,21 +1,21 @@
 #!/bin/bash
-NUM_ITER=100000
+NUM_ITER=20000
 
-echo "" > fixed_output3.csv
-echo "" > random_output3.csv
+echo "" > fixed_output.csv
+echo "" > random_output.csv
 
 # Run programs with randomized order to control for order effects
 for i in $(seq 1 $NUM_ITER)
 do
     # Randomly determine which program to run first (0 or 1)
     if [ $((RANDOM % 2)) -eq 0 ]; then
-        # Run fixed version first
-        ./tea_time_no_opt >> "fixed_output3.csv"
-        ./tea_time_no_opt_random >> "random_output3.csv"
+    #     Run fixed version first
+        ./tea_time_no_opt >> "fixed_output.csv"
+        ./tea_time_no_opt_random >> "random_output.csv"
     else
         # Run random version first
-        ./tea_time_no_opt_random >> "random_output3.csv"
-        ./tea_time_no_opt >> "fixed_output3.csv"
+        ./tea_time_no_opt_random >> "random_output.csv"
+        ./tea_time_no_opt >> "fixed_output.csv"
     fi
 done
 

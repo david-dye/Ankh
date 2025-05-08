@@ -4,7 +4,7 @@
 // mod_exp
 
 // set the number of bits in a nat to 32, i.e. uint32_t
-set_max_nat_bits(32)
+set_max_nat_bits(512)
 
 int tea_encrypt($1 nat v1, $1 nat v2, $1 nat k1, $1 nat k2, $1 nat k3, $1 nat k4) {
 	//=========
